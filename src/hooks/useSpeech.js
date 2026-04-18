@@ -30,11 +30,20 @@ export const useSpeech = () => {
     };
 
     recognition.onresult = (event) => {
-      let currentTranscript = '';
+      let interimTranscript = '';
+      let finalTranscript = '';
       for (let i = event.resultIndex; i < event.results.length; ++i) {
-        currentTranscript += event.results[i][0].transcript;
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += transcript;
+        } else {
+          interimTranscript += transcript;
+        }
       }
-      setTranscript(currentTranscript);
+      setTranscript(finalTranscript + interimTranscript);
+      if (finalTranscript) {
+        recognitionRef.current.finalTranscriptStr = finalTranscript;
+      }
     };
 
     recognition.onend = async () => {
