@@ -1,16 +1,40 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useMapState } from '../context/MapStateContext';
 import { parseVoiceCommand } from '../services/aiParser';
 import { geocode } from '../services/geocoder';
+import { fetchNearbyPOIs, reverseGeocode } from '../services/nearbyService';
 
 export const useSpeech = () => {
-  const { language, addCommandLog, setMapMode, setTargetLocation } = useMapState();
-  const [isListening, setIsListening] = useState(false);
+  const {
+    language,
+    addCommandLog,
+    setMapMode,
+    setTargetLocation,
+    userLocation,
+    setUserLocation,
+    setNearbyPlaces,
+    setIsNearbyOpen,
+    voiceStatus,
+    setVoiceStatus,
+    voiceMessage,
+    setVoiceMessage
+  } = useMapState();
+
   const [transcript, setTranscript] = useState('');
   const recognitionRef = useRef(null);
+  const timerRef = useRef(null);
+
+  // Helper to set temporary feedback message
+  const setFeedback = useCallback((msg, duration = 4000) => {
+    setVoiceMessage(msg);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      setVoiceMessage('');
+      setVoiceStatus('idle');
+    }, duration);
+  }, [setVoiceMessage, setVoiceStatus]);
 
   useEffect(() => {
-    // Initialize Web Speech API
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
       console.warn('Speech Recognition API not supported in this browser.');
@@ -20,160 +44,245 @@ export const useSpeech = () => {
     const recognition = new SpeechRecognition();
     recognition.continuous = false;
     recognition.interimResults = true;
-    
-    // Set language from context
     recognition.lang = language;
-    
+
     recognition.onstart = () => {
-      setIsListening(true);
+      setVoiceStatus('listening');
       setTranscript('');
+      setVoiceMessage('');
     };
 
     recognition.onresult = (event) => {
       let interimTranscript = '';
       let finalTranscript = '';
       for (let i = event.resultIndex; i < event.results.length; ++i) {
-        const transcript = event.results[i][0].transcript;
+        const t = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          finalTranscript += transcript;
+          finalTranscript += t;
         } else {
-          interimTranscript += transcript;
+          interimTranscript += t;
         }
       }
-      setTranscript(finalTranscript + interimTranscript);
+      const combined = finalTranscript || interimTranscript;
+      setTranscript(combined);
       if (finalTranscript) {
         recognitionRef.current.finalTranscriptStr = finalTranscript;
       }
     };
 
     recognition.onend = async () => {
-      setIsListening(false);
-      
-      // Get the final transcript value
-      const finalTranscript = recognitionRef.current.finalTranscriptStr;
+      const finalTranscript = recognitionRef.current.finalTranscriptStr || transcript;
       if (finalTranscript && finalTranscript.trim().length > 0) {
+        setVoiceStatus('processing');
         addCommandLog(finalTranscript, 'user');
         await processCommand(finalTranscript);
+      } else {
+        setVoiceStatus('idle');
+      }
+      setTranscript('');
+      if (recognitionRef.current) {
+        recognitionRef.current.finalTranscriptStr = '';
       }
     };
 
     recognition.onerror = (event) => {
-      console.error('Speech recognition error:', event.error);
-      setIsListening(false);
+      console.warn('Speech recognition error:', event.error);
       if (event.error !== 'no-speech') {
-         addCommandLog(`Error: ${event.error}`, 'system');
+        addCommandLog(`Voice error: ${event.error}`, 'system');
+        setFeedback(`Voice error: ${event.error}`);
+      } else {
+        setVoiceStatus('idle');
       }
     };
 
     recognitionRef.current = recognition;
-    
-  }, [language]); // Re-initialize if language changes
 
-  // Helper to keep track of the final transcript since state might not update fast enough inside onend
+    return () => {
+      try {
+        recognition.abort();
+      } catch (e) {
+        // ignore
+      }
+    };
+  }, [language, addCommandLog, setVoiceStatus, setFeedback]);
+
+  // Keep transcript updated on ref
   useEffect(() => {
     if (recognitionRef.current) {
-        recognitionRef.current.finalTranscriptStr = transcript;
+      recognitionRef.current.finalTranscriptStr = transcript;
     }
   }, [transcript]);
 
   const speak = (text) => {
     if (!window.speechSynthesis) return;
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = language;
-    window.speechSynthesis.speak(utterance);
+    try {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = language;
+      window.speechSynthesis.speak(utterance);
+    } catch (e) {
+      console.warn('Speech synthesis error:', e);
+    }
   };
 
   const processCommand = async (text) => {
-    addCommandLog('Analyzing command...', 'system');
+    setVoiceStatus('processing');
+    setVoiceMessage('Understanding...');
+
     const intent = await parseVoiceCommand(text);
-    
+
     if (intent.action === 'error') {
       addCommandLog(intent.message, 'system');
-      speak("I encountered an error.");
+      setVoiceStatus('response');
+      setFeedback(intent.message);
+      speak("I encountered an issue processing that command.");
       return;
     }
 
     let responseText = '';
 
-    // Handle view map mode switches
+    // 1. Switch View Mode (2D / 3D)
     if (intent.action === 'switch_view' || intent.view_mode) {
       if (intent.view_mode === '2D') {
         setMapMode('2D');
-        responseText = 'Switching to 2D map.';
+        responseText = 'Switched to 2D map view.';
       } else if (intent.view_mode === '3D') {
         setMapMode('3D');
-        responseText = 'Switching to 3D globe.';
+        responseText = 'Switched to 3D globe view.';
       }
     }
 
-    // Handle navigation
-    if (intent.action === 'navigate' && intent.location) {
-      addCommandLog(`Searching coordinates for ${intent.location}...`, 'system');
+    // 2. Navigation / Fly To
+    else if (intent.action === 'navigate' && intent.location) {
+      addCommandLog(`Locating ${intent.location}...`, 'system');
       const coords = await geocode(intent.location);
       if (coords) {
         setTargetLocation({
-           lon: coords.lon,
-           lat: coords.lat,
-           zoom: intent.zoom === 'in' ? 14 : intent.zoom === 'out' ? 5 : 10,
-           timestamp: Date.now()
+          lon: coords.lon,
+          lat: coords.lat,
+          zoom: intent.zoom === 'in' ? 15 : intent.zoom === 'out' ? 6 : 13,
+          label: coords.displayName?.split(',')[0] || intent.location,
+          timestamp: Date.now()
         });
-        
-        // Multi-lingual response building logic
+
+        // Also fetch nearby POIs for the searched place
+        try {
+          const pois = await fetchNearbyPOIs(coords.lat, coords.lon);
+          if (pois && pois.length > 0) {
+            setNearbyPlaces(pois);
+            setIsNearbyOpen(true);
+          }
+        } catch (e) {
+          // ignore
+        }
+
         if (language === 'hi-IN') responseText = `${intent.location} की ओर जा रहे हैं।`;
-        else if (language === 'bn-IN') responseText = `${intent.location} এ যাচ্ছি।`;
+        else if (language === 'bn-IN') responseText = `${intent.location}-এ যাচ্ছি।`;
         else responseText = `Navigating to ${intent.location}.`;
-        
       } else {
-        responseText = `Could not find location ${intent.location}.`;
+        responseText = `Could not find "${intent.location}".`;
       }
     }
 
-    // Handle Zoom
-    if (intent.action === 'zoom' && intent.zoom) {
-       // Just update target targetLocation with a relative zoom if possible, 
-       // or issue a general zoom event. To keep it simple, we just pass the zoom command
-       setTargetLocation({ zoomOnly: intent.zoom, timestamp: Date.now() });
-       responseText = `Zooming ${intent.zoom}.`;
+    // 3. Zoom Controls
+    else if (intent.action === 'zoom' && intent.zoom) {
+      setTargetLocation({ zoomOnly: intent.zoom, timestamp: Date.now() });
+      responseText = `Zoomed ${intent.zoom}.`;
     }
-    
-    // Handle locate_me
-    if (intent.action === 'locate_me') {
-       if (navigator.geolocation) {
-         navigator.geolocation.getCurrentPosition((pos) => {
-           setTargetLocation({
-              lon: pos.coords.longitude,
-              lat: pos.coords.latitude,
-              zoom: 14,
-              timestamp: Date.now()
-           });
-         });
-         responseText = "Finding your location.";
-       } else {
-         responseText = "Geolocation is not supported.";
-       }
+
+    // 4. Locate Me
+    else if (intent.action === 'locate_me') {
+      if (userLocation) {
+        setTargetLocation({
+          lon: userLocation.lon,
+          lat: userLocation.lat,
+          zoom: 15,
+          isUserLocation: true,
+          label: userLocation.name,
+          timestamp: Date.now()
+        });
+        responseText = `Centered on your location (${userLocation.name}).`;
+      } else if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(async (pos) => {
+          const geoInfo = await reverseGeocode(pos.coords.latitude, pos.coords.longitude);
+          const name = geoInfo?.name || 'Current Location';
+          setUserLocation({
+            lat: pos.coords.latitude,
+            lon: pos.coords.longitude,
+            accuracy: Math.round(pos.coords.accuracy),
+            name: name,
+            city: geoInfo?.city || ''
+          });
+          setTargetLocation({
+            lon: pos.coords.longitude,
+            lat: pos.coords.latitude,
+            zoom: 15,
+            isUserLocation: true,
+            label: name,
+            timestamp: Date.now()
+          });
+        });
+        responseText = "Finding your location...";
+      } else {
+        responseText = "Geolocation is not supported in this browser.";
+      }
+    }
+
+    // 5. Explore Nearby POIs
+    else if (intent.action === 'nearby' || intent.action === 'explore') {
+      const centerLat = userLocation?.lat || 20.5937;
+      const centerLon = userLocation?.lon || 78.9629;
+      const pois = await fetchNearbyPOIs(centerLat, centerLon);
+      setNearbyPlaces(pois);
+      setIsNearbyOpen(true);
+      responseText = `Found ${pois.length} places nearby.`;
     }
 
     if (responseText) {
       addCommandLog(responseText, 'system');
+      setVoiceStatus('response');
+      setFeedback(responseText, 5000);
       speak(responseText);
-    } else if (intent.action !== 'switch_view') {
-      addCommandLog(`I understood: ${JSON.stringify(intent)} but couldn't execute it.`, 'system');
+    } else {
+      const fallback = "Command processed.";
+      addCommandLog(fallback, 'system');
+      setVoiceStatus('response');
+      setFeedback(fallback, 3000);
     }
   };
 
   const toggleListening = () => {
     if (!recognitionRef.current) return;
-    
-    if (isListening) {
-      recognitionRef.current.stop();
+
+    if (voiceStatus === 'listening') {
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {
+        // ignore
+      }
+      setVoiceStatus('idle');
     } else {
-      recognitionRef.current.start();
+      try {
+        recognitionRef.current.start();
+      } catch (e) {
+        console.warn('Recognition start error:', e);
+        // If already started, abort and retry
+        try {
+          recognitionRef.current.abort();
+          setTimeout(() => recognitionRef.current.start(), 100);
+        } catch (err) {
+          // ignore
+        }
+      }
     }
   };
 
   return {
-    isListening,
+    isListening: voiceStatus === 'listening',
+    voiceStatus,
+    voiceMessage,
     transcript,
-    toggleListening
+    toggleListening,
+    processManualCommand: processCommand
   };
 };

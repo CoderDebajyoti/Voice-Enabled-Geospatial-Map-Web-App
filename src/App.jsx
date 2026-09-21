@@ -1,44 +1,84 @@
 import React from 'react';
 import Map2D from './components/Map2D';
 import Map3D from './components/Map3D';
-import UIControls from './components/UIControls';
+import Header from './components/Header';
+import MapControls from './components/MapControls';
 import VoiceControl from './components/VoiceControl';
 import CommandLog from './components/CommandLog';
-import { MapStateProvider } from './context/MapStateContext';
+import NearbyPanel from './components/NearbyPanel';
+import { MapStateProvider, useMapState } from './context/MapStateContext';
+import { useLocation } from './hooks/useLocation';
+import { AlertCircle, Crosshair } from 'lucide-react';
+
+const MapAppContent = () => {
+  const { locationPermission, userLocation } = useMapState();
+  const { recenterUserLocation, requestUserLocation } = useLocation();
+
+  return (
+    <div className="relative w-full h-screen overflow-hidden bg-slate-950 text-slate-100 font-sans select-none">
+      {/* 1. Map Canvas Views (2D OpenLayers & 3D Cesium) */}
+      <Map2D />
+      <Map3D />
+
+      {/* 2. Top Header Navigation */}
+      <div className="absolute top-0 inset-x-0 z-20">
+        <Header />
+      </div>
+
+      {/* 3. Location Permission Banner (non-intrusive, only if denied) */}
+      {locationPermission === 'denied' && (
+        <div className="absolute top-16 inset-x-0 z-20 flex justify-center px-4 pointer-events-none">
+          <div className="bg-slate-900/95 border border-rose-500/40 text-rose-200 px-4 py-2 rounded-xl shadow-lg backdrop-blur-md flex items-center gap-3 text-xs pointer-events-auto">
+            <AlertCircle size={15} className="text-rose-400 flex-shrink-0" />
+            <span>Location permission disabled. Enable it to unlock "You are here" and nearby places.</span>
+            <button
+              onClick={() => requestUserLocation(true, true)}
+              className="px-2.5 py-1 bg-rose-600/80 hover:bg-rose-600 text-white rounded-lg text-xs font-medium transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 4. Left Context Area (Nearby Places & Activity Log) */}
+      <div className="absolute top-16 left-4 z-20 flex flex-col gap-3 pointer-events-none max-w-sm">
+        <NearbyPanel />
+        <CommandLog />
+      </div>
+
+      {/* 5. Right Map Controls */}
+      <div className="absolute top-16 right-4 z-20">
+        <MapControls />
+      </div>
+
+      {/* 6. Bottom Floating Voice Assistant Trigger */}
+      <div className="absolute bottom-6 right-4 sm:bottom-6 sm:right-6 z-20">
+        <VoiceControl />
+      </div>
+
+      {/* 7. Bottom Left Quick Status Pill */}
+      {userLocation && (
+        <div className="absolute bottom-6 left-4 z-10 pointer-events-auto">
+          <button
+            onClick={recenterUserLocation}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/90 hover:bg-slate-900 border border-slate-700/80 text-xs text-slate-300 shadow-md backdrop-blur-md transition-all group"
+            title="Click to center on your location"
+          >
+            <span className="w-2 h-2 rounded-full bg-blue-500 group-hover:scale-110 transition-transform" />
+            <span className="font-medium text-slate-200">{userLocation.name}</span>
+            {userLocation.city && <span className="text-slate-400 text-[11px]">· {userLocation.city}</span>}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
 
 function App() {
   return (
     <MapStateProvider>
-      <div className="relative w-full h-screen overflow-hidden bg-gray-900 text-gray-800 font-sans">
-        {/* Maps */}
-        <Map2D />
-        <Map3D />
-        
-        {/* Overlay UI */}
-        <div className="absolute inset-x-0 top-0 pointer-events-none z-10 flex flex-col p-4 sm:p-6 justify-between h-full">
-          {/* Top Panel: Title and Controls */}
-          <div className="flex flex-col sm:flex-row justify-between items-start gap-4">
-            <div className="glass-panel-dark px-6 py-3 pointer-events-auto">
-              <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">
-                GeoVoice AI
-              </h1>
-              <p className="text-xs text-gray-400 font-medium tracking-wide">3D MAPS & VOICE CONTROL</p>
-            </div>
-            
-            <UIControls />
-          </div>
-
-          {/* Bottom Panel: Logs */}
-          <div className="flex justify-between items-end w-full">
-            <CommandLog />
-          </div>
-        </div>
-        
-        {/* Floating Voice Control - Right Bottom */}
-        <div className="absolute bottom-6 right-6 sm:bottom-10 sm:right-10 z-20">
-          <VoiceControl />
-        </div>
-      </div>
+      <MapAppContent />
     </MapStateProvider>
   );
 }

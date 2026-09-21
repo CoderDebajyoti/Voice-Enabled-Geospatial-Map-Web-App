@@ -1,13 +1,14 @@
 import React, { useEffect, useRef } from 'react';
 import { Viewer, Cartesian3, Math as CesiumMath, Color, Entity } from 'cesium';
-import "cesium/Build/Cesium/Widgets/widgets.css";
+import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { useMapState } from '../context/MapStateContext';
 
 const Map3D = () => {
   const viewerRef = useRef(null);
   const cesiumViewer = useRef(null);
-  const entityRef = useRef(null);
-  const { mapMode, targetLocation } = useMapState();
+  const targetEntityRef = useRef(null);
+  const userEntityRef = useRef(null);
+  const { mapMode, targetLocation, userLocation } = useMapState();
 
   useEffect(() => {
     // Initialize Cesium Viewer
@@ -22,16 +23,17 @@ const Map3D = () => {
       navigationHelpButton: false,
       fullscreenButton: false,
       vrButton: false,
-      selectionIndicator: false,
-      // Minimal setup to work perfectly without requiring an Ion token immediately
+      selectionIndicator: false
     });
 
-    // Hide default Cesium logo for standard UI look
-    viewer.cesiumWidget.creditContainer.style.display = "none";
+    // Hide default Cesium logo for clean UI
+    if (viewer.cesiumWidget && viewer.cesiumWidget.creditContainer) {
+      viewer.cesiumWidget.creditContainer.style.display = 'none';
+    }
 
-    // Set initial camera view to India
+    // Set initial camera view
     viewer.camera.flyTo({
-      destination: Cartesian3.fromDegrees(78.9629, 20.5937, 5000000.0),
+      destination: Cartesian3.fromDegrees(78.9629, 20.5937, 8000000.0),
       duration: 0
     });
 
@@ -42,60 +44,82 @@ const Map3D = () => {
     };
   }, []);
 
-  // Handle map state changes
+  // Update User Location Entity in 3D
+  useEffect(() => {
+    if (cesiumViewer.current && userLocation) {
+      if (userEntityRef.current) {
+        cesiumViewer.current.entities.remove(userEntityRef.current);
+      }
+
+      userEntityRef.current = cesiumViewer.current.entities.add({
+        position: Cartesian3.fromDegrees(userLocation.lon, userLocation.lat),
+        point: {
+          pixelSize: 14,
+          color: Color.fromCssColorString('#2563eb'),
+          outlineColor: Color.WHITE,
+          outlineWidth: 3
+        }
+      });
+    }
+  }, [userLocation]);
+
+  // Handle Target Navigation & Zoom in 3D
   useEffect(() => {
     if (cesiumViewer.current && targetLocation) {
       if (targetLocation.zoomOnly) {
-         const camera = cesiumViewer.current.camera;
-         const currentHeight = camera.positionCartographic.height;
-         const targetHeight = targetLocation.zoomOnly === 'in' ? currentHeight / 2 : currentHeight * 2;
-         
-         camera.flyTo({
-           destination: Cartesian3.fromRadians(
-             camera.positionCartographic.longitude,
-             camera.positionCartographic.latitude,
-             targetHeight
-           ),
-           duration: 1.0
-         });
-         return;
+        const camera = cesiumViewer.current.camera;
+        const currentHeight = camera.positionCartographic.height;
+        const targetHeight =
+          targetLocation.zoomOnly === 'in' ? Math.max(500, currentHeight * 0.5) : currentHeight * 2;
+
+        camera.flyTo({
+          destination: Cartesian3.fromRadians(
+            camera.positionCartographic.longitude,
+            camera.positionCartographic.latitude,
+            targetHeight
+          ),
+          duration: 0.8
+        });
+        return;
       }
 
       if (targetLocation.lon !== undefined && targetLocation.lat !== undefined) {
-         // Create or update marker (Entity)
-         if (entityRef.current) {
-             cesiumViewer.current.entities.remove(entityRef.current);
-         }
-         
-         entityRef.current = cesiumViewer.current.entities.add({
-             position: Cartesian3.fromDegrees(targetLocation.lon, targetLocation.lat),
-             point: {
-                 pixelSize: 15,
-                 color: Color.fromCssColorString('#f43f5e'),
-                 outlineColor: Color.WHITE,
-                 outlineWidth: 2
-             }
-         });
+        // Target Marker (if not user location)
+        if (targetEntityRef.current) {
+          cesiumViewer.current.entities.remove(targetEntityRef.current);
+        }
 
-         // Calculate altitude based on zoom proxy
-         const altitude = targetLocation.zoom ? Math.max(1000, 10000000 / targetLocation.zoom) : 10000;
+        if (!targetLocation.isUserLocation) {
+          targetEntityRef.current = cesiumViewer.current.entities.add({
+            position: Cartesian3.fromDegrees(targetLocation.lon, targetLocation.lat),
+            point: {
+              pixelSize: 14,
+              color: Color.fromCssColorString('#ef4444'),
+              outlineColor: Color.WHITE,
+              outlineWidth: 2
+            }
+          });
+        }
 
-         cesiumViewer.current.camera.flyTo({
-             destination: Cartesian3.fromDegrees(targetLocation.lon, targetLocation.lat, altitude),
-             orientation: {
-                 heading: CesiumMath.toRadians(0.0),
-                 pitch: CesiumMath.toRadians(-90.0),
-                 roll: 0.0
-             },
-             duration: 2.0
-         });
+        // Calculate altitude
+        const altitude = targetLocation.zoom ? Math.max(1500, 15000000 / Math.pow(2, targetLocation.zoom - 2)) : 5000;
+
+        cesiumViewer.current.camera.flyTo({
+          destination: Cartesian3.fromDegrees(targetLocation.lon, targetLocation.lat, altitude),
+          orientation: {
+            heading: CesiumMath.toRadians(0.0),
+            pitch: CesiumMath.toRadians(-60.0),
+            roll: 0.0
+          },
+          duration: 1.8
+        });
       }
     }
   }, [targetLocation]);
 
   return (
-    <div 
-      className={`absolute inset-0 w-full h-full transition-opacity duration-1000 ${
+    <div
+      className={`absolute inset-0 w-full h-full transition-opacity duration-700 ${
         mapMode === '3D' ? 'opacity-100 pointer-events-auto z-0' : 'opacity-0 pointer-events-none -z-10'
       }`}
     >
