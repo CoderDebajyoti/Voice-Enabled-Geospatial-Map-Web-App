@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { useMapState } from '../context/MapStateContext';
 import { useActiveUsers } from '../hooks/useActiveUsers';
-import { geocode } from '../services/geocoder';
-import { fetchNearbyPOIs } from '../services/nearbyService';
+import { useSpeech } from '../hooks/useSpeech';
 import {
   Compass,
   Search,
@@ -10,8 +9,7 @@ import {
   Globe,
   Languages,
   History,
-  X,
-  Sparkles
+  X
 } from 'lucide-react';
 
 const Header = () => {
@@ -20,16 +18,14 @@ const Header = () => {
     setMapMode,
     language,
     setLanguage,
-    setTargetLocation,
-    setNearbyPlaces,
-    setIsNearbyOpen,
+    detectedLanguage,
     isLogOpen,
     setIsLogOpen,
     commandsLog,
-    addCommandLog,
     userLocation
   } = useMapState();
 
+  const { processManualCommand } = useSpeech();
   const activeUsers = useActiveUsers(26);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
@@ -39,41 +35,8 @@ const Header = () => {
     if (!searchQuery.trim()) return;
 
     setIsSearching(true);
-    addCommandLog(`Searching for "${searchQuery}"`, 'user');
-
-    const result = await geocode(searchQuery.trim());
+    await processManualCommand(searchQuery.trim());
     setIsSearching(false);
-
-    if (result) {
-      setTargetLocation({
-        lon: result.lon,
-        lat: result.lat,
-        zoom: 14,
-        label: result.displayName?.split(',')[0] || searchQuery,
-        timestamp: Date.now()
-      });
-      addCommandLog(`Navigated to ${result.displayName?.split(',')[0]}`, 'system');
-
-      // Fetch nearby places for this search location
-      try {
-        const pois = await fetchNearbyPOIs(result.lat, result.lon);
-        if (pois && pois.length > 0) {
-          setNearbyPlaces(pois);
-          setIsNearbyOpen(true);
-        }
-      } catch (err) {
-        console.warn('POI error:', err);
-      }
-    } else {
-      addCommandLog(`Could not find "${searchQuery}"`, 'system');
-    }
-  };
-
-  const handleQuickSearch = (query) => {
-    setSearchQuery(query);
-    setTimeout(() => {
-      handleSearch();
-    }, 50);
   };
 
   return (
@@ -82,7 +45,7 @@ const Header = () => {
       <div className="flex items-center justify-between w-full md:w-auto gap-4">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white shadow-sm">
-            <Compass size={18} className="animate-spin-slow" />
+            <Compass size={18} />
           </div>
           <div>
             <div className="flex items-center gap-2">
@@ -118,8 +81,8 @@ const Header = () => {
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder={
               userLocation?.name
-                ? `Search places near ${userLocation.name} or type location...`
-                : 'Search any city, landmark, or voice command...'
+                ? `Ask or search in English, বাংলা, हिंदी near ${userLocation.name}...`
+                : 'Search or ask naturally in English, বাংলা, हिंदी...'
             }
             className="w-full pl-9 pr-8 py-1.5 bg-slate-800/90 hover:bg-slate-800 focus:bg-slate-800 border border-slate-700/70 focus:border-blue-500 rounded-lg text-xs text-slate-100 placeholder-slate-400 focus:outline-none transition-colors"
           />
@@ -165,7 +128,7 @@ const Header = () => {
           </button>
         </div>
 
-        {/* Language Selector */}
+        {/* Language Selector (Auto Multilingual / English / Hindi / Bengali) */}
         <div className="flex items-center bg-slate-800 border border-slate-700/80 px-2 py-1 rounded-lg gap-1.5 text-xs text-slate-300">
           <Languages size={13} className="text-slate-400" />
           <select
@@ -174,14 +137,17 @@ const Header = () => {
             className="bg-transparent text-xs font-medium text-slate-200 focus:outline-none cursor-pointer pr-1"
             aria-label="Language selection"
           >
-            <option value="en-US" className="bg-slate-900 text-slate-100">
-              EN
+            <option value="auto" className="bg-slate-900 text-slate-100">
+              Auto (EN/বাংলা/हिंदी)
             </option>
-            <option value="hi-IN" className="bg-slate-900 text-slate-100">
-              HI (हिंदी)
+            <option value="en-US" className="bg-slate-900 text-slate-100">
+              English (EN)
             </option>
             <option value="bn-IN" className="bg-slate-900 text-slate-100">
-              BN (বাংলা)
+              বাংলা (BN)
+            </option>
+            <option value="hi-IN" className="bg-slate-900 text-slate-100">
+              हिंदी (HI)
             </option>
           </select>
         </div>

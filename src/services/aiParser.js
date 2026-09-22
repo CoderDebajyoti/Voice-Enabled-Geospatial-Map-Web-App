@@ -1,135 +1,104 @@
-// Fallback rule-based parser for when API key is not configured or network fails
-const parseLocally = (text) => {
-  const clean = text.toLowerCase().trim();
+import { parseMultilingualQuery } from './multilingualEngine';
 
-  // Locate me
-  if (
-    clean.includes('locate me') ||
-    clean.includes('my location') ||
-    clean.includes('where am i') ||
-    clean.includes('find me') ||
-    clean.includes('मेरी स्थिति') ||
-    clean.includes('আমার অবস্থান')
-  ) {
-    return { action: 'locate_me' };
-  }
+/**
+ * AI & Semantic Voice Command Parser
+ * 
+ * Pipeline:
+ * 1. Multilingual Semantic, Phonetic & Grammar Parser (Local, Zero-latency, Offline-capable)
+ * 2. Optional Gemini Generative AI enhancement when API key is available
+ * 
+ * Generates structured internal representation:
+ * {
+ *   intent: "FIND_NEARBY" | "SEARCH_LOCATION" | "NAVIGATE_TO" | "SHOW_CURRENT_LOCATION" |
+ *           "CHANGE_MAP_LAYER" | "ZOOM_IN" | "ZOOM_OUT" | "GET_LOCATION_INFORMATION" |
+ *           "FIND_ROUTE" | "CLEAR_MAP",
+ *   category: "HOSPITAL" | "PHARMACY" | "RESTAURANT" | "RESTROOM" | ... | null,
+ *   location: "CURRENT_LOCATION" | string | null,
+ *   language: "en" | "bn" | "hi" | "bn-en" | "hi-en",
+ *   confidence: number,
+ *   needs_clarification: boolean,
+ *   clarification_question: string | null,
+ *   original_query: string
+ * }
+ */
 
-  // Nearby / Explore
-  if (
-    clean.includes('nearby') ||
-    clean.includes('around me') ||
-    clean.includes('places near') ||
-    clean.includes('explore') ||
-    clean.includes('आस-पास') ||
-    clean.includes('কাছাকাছি')
-  ) {
-    return { action: 'nearby' };
-  }
-
-  // Zoom
-  if (clean.includes('zoom in') || clean.includes('ज़ूम इन') || clean.includes('কাছে')) {
-    return { action: 'zoom', zoom: 'in' };
-  }
-  if (clean.includes('zoom out') || clean.includes('ज़ूम आउट') || clean.includes('দূরে')) {
-    return { action: 'zoom', zoom: 'out' };
-  }
-
-  // Switch View
-  if (clean.includes('3d') || clean.includes('globe') || clean.includes('ग्लोब')) {
-    return { action: 'switch_view', view_mode: '3D' };
-  }
-  if (clean.includes('2d') || clean.includes('flat') || clean.includes('नक्शा')) {
-    return { action: 'switch_view', view_mode: '2D' };
-  }
-
-  // Navigation (e.g. "go to Paris", "fly to Tokyo", "search London", "show New York", "Delhi")
-  const navPatterns = [
-    /(?:go to|fly to|navigate to|search|show|find|take me to|travel to)\s+(.+)/i,
-    /(?:जाओ|दिखाओ)\s+(.+)/i,
-    /(?:যাও|খুঁজুন)\s+(.+)/i
-  ];
-
-  for (const pattern of navPatterns) {
-    const match = clean.match(pattern);
-    if (match && match[1]) {
-      return { action: 'navigate', location: match[1].trim() };
-    }
-  }
-
-  // If text is short and looks like a place name (e.g. "Paris", "New York", "London")
-  if (clean.length > 2 && clean.length < 35 && !clean.includes('hello') && !clean.includes('help')) {
-    return { action: 'navigate', location: text.trim() };
-  }
-
-  return { action: 'unknown' };
-};
-
-export const parseVoiceCommand = async (text) => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-
-  // If no API key or default placeholder, use smart local rule parser
-  if (!apiKey || apiKey.includes('PASTE_YOUR') || apiKey.trim() === '') {
-    console.log("Using local command parser (No API Key provided)");
-    const localResult = parseLocally(text);
-    if (localResult.action !== 'unknown') {
-      return localResult;
-    }
+export const parseVoiceCommand = async (text, lastContext = null) => {
+  if (!text || typeof text !== 'string' || text.trim() === '') {
     return {
-      action: 'unknown',
-      message: 'Command not recognized. Try "Go to London", "Locate me", "Zoom in", or "Switch to 3D".'
+      intent: 'CLEAR_MAP',
+      category: null,
+      location: null,
+      language: 'en',
+      confidence: 0,
+      original_query: ''
     };
   }
 
+  // 1. Run our multilingual semantic and phonetic engine
+  const localSemanticResult = parseMultilingualQuery(text, lastContext);
+
+  // If local semantic engine is confident or it's a context/category/control command, use it directly
+  if (localSemanticResult && localSemanticResult.confidence >= 0.75) {
+    return localSemanticResult;
+  }
+
+  // 2. Check if Gemini API Key is configured for cloud enhancement
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+  if (!apiKey || apiKey.includes('PASTE_YOUR') || apiKey.trim() === '') {
+    return localSemanticResult;
+  }
+
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        contents: [
-          { parts: [{ text: `You are an AI assistant for a Geospatial Map application. 
-Convert the following natural language command into a JSON object.
-The output MUST be a valid JSON with the following structure:
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  text: `You are an AI assistant for a Geospatial Map application.
+Convert the natural language query into a JSON object. Understand broken English, Bengali, Hindi, or mixed code-switching.
+Return JSON ONLY with this schema:
 {
-  "action": "navigate" | "zoom" | "switch_view" | "locate_me" | "nearby" | "unknown",
-  "location": "string (optional, the place name to navigate to)",
-  "zoom": "in" | "out" (optional),
-  "view_mode": "2D" | "3D" (optional)
+  "intent": "FIND_NEARBY" | "SEARCH_LOCATION" | "NAVIGATE_TO" | "SHOW_CURRENT_LOCATION" | "CHANGE_MAP_LAYER" | "ZOOM_IN" | "ZOOM_OUT" | "GET_LOCATION_INFORMATION" | "FIND_ROUTE" | "CLEAR_MAP",
+  "category": "HOSPITAL" | "PHARMACY" | "RESTAURANT" | "HOTEL" | "RESTROOM" | "ATM" | "BANK" | "PETROL_PUMP" | "POLICE_STATION" | "BUS_STOP" | "RAILWAY_STATION" | "AIRPORT" | "CAFE" | "HOME" | null,
+  "location": "CURRENT_LOCATION" | string | null,
+  "language": "en" | "bn" | "hi" | "bn-en" | "hi-en",
+  "confidence": number,
+  "original_query": "${text}"
 }
 
-Instructions:
-- Be robust to multiple languages (English, Hindi, Bengali). Extract semantic meaning.
-- "zoom in" -> action: "zoom", zoom: "in"
-- "fly to Mumbai" -> action: "navigate", location: "Mumbai"
-- "switch to 3D" -> action: "switch_view", view_mode: "3D"
-- "where am I", "my location", "locate me" -> action: "locate_me"
-- "what is near me", "show nearby places", "nearby restaurants" -> action: "nearby"
-
-User Command: "${text}"
-
-Reply with ONLY raw JSON. Do not include markdown formatting like \`\`\`json.` }] }
-        ]
-      })
-    });
-
-    const data = await res.json();
+User query: "${text}"`
+                }
+              ]
+            }
+          ]
+        })
+      }
+    );
 
     if (!res.ok) {
-      console.warn("API returned an error, falling back to local parser:", data);
-      return parseLocally(text);
+      return localSemanticResult;
     }
 
+    const data = await res.json();
     if (data.candidates && data.candidates[0]?.content?.parts?.[0]?.text) {
       let rawText = data.candidates[0].content.parts[0].text;
       rawText = rawText.replace(/```json\n?|```/g, '').trim();
-      return JSON.parse(rawText);
-    } else {
-      return parseLocally(text);
+      const parsed = JSON.parse(rawText);
+      return {
+        ...parsed,
+        original_query: text
+      };
     }
-
-  } catch (err) {
-    console.warn("AI Fetch Error, fallback to local:", err);
-    return parseLocally(text);
+  } catch (e) {
+    console.warn('Gemini parser fallback to local:', e);
   }
+
+  return localSemanticResult;
 };

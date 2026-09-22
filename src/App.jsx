@@ -8,10 +8,10 @@ import CommandLog from './components/CommandLog';
 import NearbyPanel from './components/NearbyPanel';
 import { MapStateProvider, useMapState } from './context/MapStateContext';
 import { useLocation } from './hooks/useLocation';
-import { AlertCircle, Crosshair } from 'lucide-react';
+import { AlertCircle, Navigation2, X, Clock } from 'lucide-react';
 
 const MapAppContent = () => {
-  const { locationPermission, userLocation } = useMapState();
+  const { locationPermission, userLocation, activeRoute, setActiveRoute } = useMapState();
   const { recenterUserLocation, requestUserLocation } = useLocation();
 
   return (
@@ -33,7 +33,7 @@ const MapAppContent = () => {
             <span>Location permission disabled. Enable it to unlock "You are here" and nearby places.</span>
             <button
               onClick={() => requestUserLocation(true, true)}
-              className="px-2.5 py-1 bg-rose-600/80 hover:bg-rose-600 text-white rounded-lg text-xs font-medium transition-colors"
+              className="px-2.5 py-1 bg-rose-600/80 hover:bg-rose-600 text-white rounded-lg text-xs font-medium transition-colors cursor-pointer"
             >
               Retry
             </button>
@@ -41,32 +41,63 @@ const MapAppContent = () => {
         </div>
       )}
 
-      {/* 4. Left Context Area (Nearby Places & Activity Log) */}
+      {/* 4. Active Navigation Route Banner (Clean, product-grade indicator) */}
+      {activeRoute && (
+        <div className="absolute top-16 inset-x-0 z-20 flex justify-center px-4 pointer-events-none">
+          <div className="bg-slate-900/95 border border-blue-500/50 text-slate-100 px-4 py-2 rounded-xl shadow-xl backdrop-blur-md flex items-center gap-3 text-xs pointer-events-auto animate-fade-in">
+            <div className="w-6 h-6 rounded-lg bg-blue-600 flex items-center justify-center text-white flex-shrink-0">
+              <Navigation2 size={13} />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-slate-200">{activeRoute.destinationName}</span>
+              <span className="text-slate-400">·</span>
+              <span className="text-blue-400 font-medium">{activeRoute.distanceKm} km</span>
+              <span className="text-slate-400">·</span>
+              <span className="flex items-center gap-1 text-slate-300">
+                <Clock size={11} className="text-slate-400" />
+                {activeRoute.durationFormatted}
+              </span>
+            </div>
+            <button
+              onClick={() => setActiveRoute(null)}
+              className="p-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer ml-1"
+              title="Clear route"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 5. Left Context Area (Nearby Places & Activity Log) */}
       <div className="absolute top-16 left-4 z-20 flex flex-col gap-3 pointer-events-none max-w-sm">
         <NearbyPanel />
         <CommandLog />
       </div>
 
-      {/* 5. Right Map Controls */}
+      {/* 6. Right Map Controls */}
       <div className="absolute top-16 right-4 z-20">
         <MapControls />
       </div>
 
-      {/* 6. Bottom Floating Voice Assistant Trigger */}
+      {/* 7. Bottom Floating Voice Assistant Trigger */}
       <div className="absolute bottom-6 right-4 sm:bottom-6 sm:right-6 z-20">
         <VoiceControl />
       </div>
 
-      {/* 7. Bottom Left Quick Status Pill */}
+      {/* 8. Bottom Left Quick Status Pill ("You are here" indicator) */}
       {userLocation && (
         <div className="absolute bottom-6 left-4 z-10 pointer-events-auto">
           <button
             onClick={recenterUserLocation}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/90 hover:bg-slate-900 border border-slate-700/80 text-xs text-slate-300 shadow-md backdrop-blur-md transition-all group"
+            className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/90 hover:bg-slate-900 border border-slate-700/80 text-xs text-slate-300 shadow-md backdrop-blur-md transition-all group cursor-pointer"
             title="Click to center on your location"
           >
-            <span className="w-2 h-2 rounded-full bg-blue-500 group-hover:scale-110 transition-transform" />
-            <span className="font-medium text-slate-200">{userLocation.name}</span>
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+            </span>
+            <span className="font-medium text-slate-200">You are here: {userLocation.name}</span>
             {userLocation.city && <span className="text-slate-400 text-[11px]">· {userLocation.city}</span>}
           </button>
         </div>

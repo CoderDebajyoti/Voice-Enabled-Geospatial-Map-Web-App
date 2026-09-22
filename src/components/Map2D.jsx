@@ -8,6 +8,7 @@ import XYZ from 'ol/source/XYZ';
 import Feature from 'ol/Feature';
 import Point from 'ol/geom/Point';
 import CircleGeom from 'ol/geom/Circle';
+import LineString from 'ol/geom/LineString';
 import { fromLonLat, toLonLat } from 'ol/proj';
 import { Vector as VectorLayer } from 'ol/layer';
 import { Vector as VectorSource } from 'ol/source';
@@ -25,6 +26,7 @@ const Map2D = () => {
   const userLocSourceRef = useRef(null);
   const placesSourceRef = useRef(null);
   const searchSourceRef = useRef(null);
+  const routeSourceRef = useRef(null);
   const popupOverlayRef = useRef(null);
 
   const {
@@ -34,7 +36,8 @@ const Map2D = () => {
     userLocation,
     nearbyPlaces,
     setSelectedPlace,
-    setIsNearbyOpen
+    setIsNearbyOpen,
+    activeRoute
   } = useMapState();
 
   // 1. Initialize Map
@@ -79,26 +82,51 @@ const Map2D = () => {
             stroke: new Stroke({ color: 'rgba(59, 130, 246, 0.35)', width: 1.5 })
           });
         }
-        // Google Maps blue dot indicator: Blue solid with white stroke and subtle outer aura
+        // Google Maps blue dot indicator: Blue solid with white stroke and outer aura
         return [
-          // Outer halo ring
           new Style({
             image: new CircleStyle({
-              radius: 13,
+              radius: 14,
               fill: new Fill({ color: 'rgba(37, 99, 235, 0.25)' }),
-              stroke: new Stroke({ color: 'rgba(255, 255, 255, 0.6)', width: 1 })
+              stroke: new Stroke({ color: 'rgba(255, 255, 255, 0.6)', width: 1.5 })
             })
           }),
-          // Main Blue core
           new Style({
             image: new CircleStyle({
-              radius: 7,
-              fill: new Fill({ color: '#2563eb' }), // Primary royal blue
+              radius: 7.5,
+              fill: new Fill({ color: '#2563eb' }),
               stroke: new Stroke({ color: '#ffffff', width: 2.5 })
             })
           })
         ];
       }
+    });
+
+    // Source & Layer for Route Polyline
+    const routeSource = new VectorSource();
+    routeSourceRef.current = routeSource;
+
+    const routeLayer = new VectorLayer({
+      source: routeSource,
+      zIndex: 85,
+      style: [
+        // Outer glow/casing
+        new Style({
+          stroke: new Stroke({
+            color: 'rgba(37, 99, 235, 0.35)',
+            width: 8
+          })
+        }),
+        // Main crisp blue route line
+        new Style({
+          stroke: new Stroke({
+            color: '#2563eb',
+            width: 4.5,
+            lineCap: 'round',
+            lineJoin: 'round'
+          })
+        })
+      ]
     });
 
     // Source & Layer for Nearby POIs
@@ -107,29 +135,36 @@ const Map2D = () => {
 
     const placesLayer = new VectorLayer({
       source: placesSource,
-      zIndex: 80,
+      zIndex: 90,
       style: (feature) => {
-        const cat = feature.get('category') || 'landmark';
+        const cat = (feature.get('category') || 'landmark').toLowerCase();
         const name = feature.get('name') || '';
+
         let color = '#475569'; // slate-600
-        if (cat === 'food') color = '#d97706'; // amber-600
-        else if (cat === 'transit') color = '#4f46e5'; // indigo-600
-        else if (cat === 'parks') color = '#059669'; // emerald-600
+        if (cat.includes('hospital')) color = '#ef4444'; // Red
+        else if (cat.includes('pharmacy')) color = '#10b981'; // Emerald
+        else if (cat.includes('food') || cat.includes('restaurant')) color = '#f59e0b'; // Amber
+        else if (cat.includes('restroom')) color = '#06b6d4'; // Cyan
+        else if (cat.includes('transit')) color = '#4f46e5'; // Indigo
+        else if (cat.includes('parks')) color = '#059669'; // Green
+        else if (cat.includes('atm') || cat.includes('bank')) color = '#3b82f6'; // Blue
+        else if (cat.includes('petrol')) color = '#f97316'; // Orange
+        else if (cat.includes('hotel')) color = '#8b5cf6'; // Purple
 
         return new Style({
           image: new CircleStyle({
-            radius: 6,
+            radius: 7,
             fill: new Fill({ color }),
-            stroke: new Stroke({ color: '#ffffff', width: 2 })
+            stroke: new Stroke({ color: '#ffffff', width: 2.5 })
           }),
           text: new Text({
             text: name.length > 20 ? `${name.substring(0, 18)}…` : name,
-            font: '500 11px Inter, system-ui, sans-serif',
-            offsetY: -14,
-            fill: new Fill({ color: '#1e293b' }),
+            font: '600 11px Inter, system-ui, sans-serif',
+            offsetY: -15,
+            fill: new Fill({ color: '#0f172a' }),
             stroke: new Stroke({ color: '#ffffff', width: 3 }),
-            backgroundFill: new Fill({ color: 'rgba(255,255,255,0.85)' }),
-            padding: [2, 4, 2, 4]
+            backgroundFill: new Fill({ color: 'rgba(255,255,255,0.92)' }),
+            padding: [2, 5, 2, 5]
           })
         });
       }
@@ -141,14 +176,14 @@ const Map2D = () => {
 
     const searchLayer = new VectorLayer({
       source: searchSource,
-      zIndex: 90,
+      zIndex: 95,
       style: (feature) => {
         const label = feature.get('label') || '';
         return [
           new Style({
             image: new CircleStyle({
               radius: 9,
-              fill: new Fill({ color: '#ef4444' }), // Red-500
+              fill: new Fill({ color: '#ef4444' }),
               stroke: new Stroke({ color: '#ffffff', width: 2.5 })
             }),
             text: label
@@ -182,10 +217,10 @@ const Map2D = () => {
 
     const map = new Map({
       target: mapElement.current,
-      layers: [baseLayer, placesLayer, searchLayer, userLocLayer],
+      layers: [baseLayer, routeLayer, placesLayer, searchLayer, userLocLayer],
       overlays: [popupOverlay],
       view: new View({
-        center: fromLonLat([78.9629, 20.5937]), // Center of India default
+        center: fromLonLat([78.9629, 20.5937]), // Default India center
         zoom: 4,
         maxZoom: 19,
         minZoom: 2
@@ -252,7 +287,7 @@ const Map2D = () => {
 
       const userCoords = fromLonLat([userLocation.lon, userLocation.lat]);
 
-      // Accuracy ring (radius in meters approximated)
+      // Accuracy ring
       if (userLocation.accuracy && userLocation.accuracy > 10) {
         const accuracyCircle = new Feature({
           geometry: new CircleGeom(userCoords, userLocation.accuracy),
@@ -290,7 +325,23 @@ const Map2D = () => {
     }
   }, [nearbyPlaces]);
 
-  // 5. Handle Target Navigation / Recenter / Zoom
+  // 5. Update Navigation Route Polyline
+  useEffect(() => {
+    if (routeSourceRef.current) {
+      routeSourceRef.current.clear();
+      if (activeRoute && activeRoute.coordinates && activeRoute.coordinates.length > 0) {
+        const transformedCoords = activeRoute.coordinates.map((coord) =>
+          fromLonLat([coord[0], coord[1]])
+        );
+        const routeFeature = new Feature({
+          geometry: new LineString(transformedCoords)
+        });
+        routeSourceRef.current.addFeature(routeFeature);
+      }
+    }
+  }, [activeRoute]);
+
+  // 6. Handle Target Navigation / Recenter / Zoom
   useEffect(() => {
     if (mapRef.current && targetLocation) {
       const view = mapRef.current.getView();
@@ -336,7 +387,6 @@ const Map2D = () => {
       }`}
     >
       <div ref={mapElement} className="w-full h-full" />
-      {/* Hidden popup container for overlay */}
       <div ref={popupElement} className="hidden" />
     </div>
   );

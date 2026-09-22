@@ -1,23 +1,41 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useMapState } from '../context/MapStateContext';
 import { parseVoiceCommand } from '../services/aiParser';
+import { detectLanguage, CATEGORIES } from '../services/multilingualEngine';
 import { geocode } from '../services/geocoder';
 import { fetchNearbyPOIs, reverseGeocode } from '../services/nearbyService';
+import { calculateRoute } from '../services/routingService';
 
 export const useSpeech = () => {
   const {
     language,
+    setLanguage,
+    detectedLanguage,
+    setDetectedLanguage,
     addCommandLog,
     setMapMode,
+    setMapLayer,
     setTargetLocation,
     userLocation,
     setUserLocation,
+    nearbyPlaces,
     setNearbyPlaces,
+    selectedPlace,
+    setSelectedPlace,
     setIsNearbyOpen,
+    setActiveCategory,
     voiceStatus,
     setVoiceStatus,
     voiceMessage,
-    setVoiceMessage
+    setVoiceMessage,
+    lastVoiceIntent,
+    setLastVoiceIntent,
+    pendingClarification,
+    setPendingClarification,
+    activeRoute,
+    setActiveRoute,
+    homeLocation,
+    setHomeLocation
   } = useMapState();
 
   const [transcript, setTranscript] = useState('');
@@ -25,15 +43,46 @@ export const useSpeech = () => {
   const timerRef = useRef(null);
 
   // Helper to set temporary feedback message
-  const setFeedback = useCallback((msg, duration = 4000) => {
-    setVoiceMessage(msg);
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => {
-      setVoiceMessage('');
-      setVoiceStatus('idle');
-    }, duration);
-  }, [setVoiceMessage, setVoiceStatus]);
+  const setFeedback = useCallback(
+    (msg, status = 'response', duration = 5000) => {
+      setVoiceMessage(msg);
+      setVoiceStatus(status);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        setVoiceMessage('');
+        setVoiceStatus('idle');
+      }, duration);
+    },
+    [setVoiceMessage, setVoiceStatus]
+  );
 
+  // Spoken feedback in matching language
+  const speak = useCallback(
+    (text, langCode = 'en') => {
+      if (!window.speechSynthesis) return;
+      try {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+
+        if (langCode === 'bn' || langCode === 'bn-en') {
+          utterance.lang = 'bn-IN';
+        } else if (langCode === 'hi' || langCode === 'hi-en') {
+          utterance.lang = 'hi-IN';
+        } else {
+          utterance.lang = 'en-US';
+        }
+
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        window.speechSynthesis.speak(utterance);
+      } catch (e) {
+        console.warn('Speech synthesis error:', e);
+      }
+    },
+    []
+  );
+
+  // Initialize Speech Recognition with adaptive language
   useEffect(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -44,7 +93,14 @@ export const useSpeech = () => {
     const recognition = new SpeechRecognition();
     recognition.continuous = false;
     recognition.interimResults = true;
-    recognition.lang = language;
+
+    // Use selected language or browser default for auto
+    if (language === 'auto') {
+      // Default to browser locale
+      recognition.lang = navigator.language || 'en-US';
+    } else {
+      recognition.lang = language;
+    }
 
     recognition.onstart = () => {
       setVoiceStatus('listening');
@@ -65,6 +121,13 @@ export const useSpeech = () => {
       }
       const combined = finalTranscript || interimTranscript;
       setTranscript(combined);
+
+      // Real-time language detection on interim transcript
+      if (combined.trim().length > 2) {
+        const langInfo = detectLanguage(combined);
+        setDetectedLanguage(langInfo);
+      }
+
       if (finalTranscript) {
         recognitionRef.current.finalTranscriptStr = finalTranscript;
       }
@@ -74,7 +137,10 @@ export const useSpeech = () => {
       const finalTranscript = recognitionRef.current.finalTranscriptStr || transcript;
       if (finalTranscript && finalTranscript.trim().length > 0) {
         setVoiceStatus('processing');
-        addCommandLog(finalTranscript, 'user');
+        const langInfo = detectLanguage(finalTranscript);
+        setDetectedLanguage(langInfo);
+
+        addCommandLog(finalTranscript, 'user', { lang: langInfo.label });
         await processCommand(finalTranscript);
       } else {
         setVoiceStatus('idle');
@@ -89,7 +155,7 @@ export const useSpeech = () => {
       console.warn('Speech recognition error:', event.error);
       if (event.error !== 'no-speech') {
         addCommandLog(`Voice error: ${event.error}`, 'system');
-        setFeedback(`Voice error: ${event.error}`);
+        setFeedback(`Voice error: ${event.error}`, 'idle');
       } else {
         setVoiceStatus('idle');
       }
@@ -104,70 +170,182 @@ export const useSpeech = () => {
         // ignore
       }
     };
-  }, [language, addCommandLog, setVoiceStatus, setFeedback]);
+  }, [language, addCommandLog, setVoiceStatus, setFeedback, setDetectedLanguage]);
 
-  // Keep transcript updated on ref
+  // Keep transcript string on ref
   useEffect(() => {
     if (recognitionRef.current) {
       recognitionRef.current.finalTranscriptStr = transcript;
     }
   }, [transcript]);
 
-  const speak = (text) => {
-    if (!window.speechSynthesis) return;
-    try {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = language;
-      window.speechSynthesis.speak(utterance);
-    } catch (e) {
-      console.warn('Speech synthesis error:', e);
-    }
-  };
-
+  // Main Command Processing Pipeline
   const processCommand = async (text) => {
     setVoiceStatus('processing');
     setVoiceMessage('Understanding...');
 
-    const intent = await parseVoiceCommand(text);
+    const cleanLower = text.toLowerCase().trim();
 
-    if (intent.action === 'error') {
-      addCommandLog(intent.message, 'system');
-      setVoiceStatus('response');
-      setFeedback(intent.message);
-      speak("I encountered an issue processing that command.");
+    // Check if user is answering a pending clarification (e.g., "yes", "হ্যাঁ", "हाँ", "sure", "correct")
+    const affirmativeWords = [
+      'yes', 'yeah', 'yep', 'sure', 'correct', 'ok', 'okay',
+      'হ্যাঁ', 'হ্যা', 'হাঁ', 'ঠিক আছে', 'করো',
+      'हाँ', 'हां', 'सही है', 'ठीक है', 'करो'
+    ];
+    const isAffirmative = affirmativeWords.some((w) => cleanLower === w || cleanLower.startsWith(w));
+
+    if (pendingClarification && isAffirmative) {
+      const intentToExecute = pendingClarification;
+      setPendingClarification(null);
+      await executeIntent(intentToExecute);
       return;
     }
 
+    // Parse with Multilingual & Conversational Context
+    const parsed = await parseVoiceCommand(text, lastVoiceIntent);
+
+    // If clarification needed, prompt politely instead of randomly executing
+    if (parsed.needs_clarification && parsed.clarification_question) {
+      setPendingClarification(parsed);
+      setVoiceStatus('clarifying');
+      setVoiceMessage(parsed.clarification_question);
+      addCommandLog(parsed.clarification_question, 'system');
+      speak(parsed.clarification_question, parsed.language);
+      return;
+    }
+
+    await executeIntent(parsed);
+  };
+
+  // Dispatch Geospatial Action from Structured Intent
+  const executeIntent = async (parsed) => {
+    const { intent, category, location, language: detectedLang, context_reference, targetIndex } = parsed;
     let responseText = '';
 
-    // 1. Switch View Mode (2D / 3D)
-    if (intent.action === 'switch_view' || intent.view_mode) {
-      if (intent.view_mode === '2D') {
-        setMapMode('2D');
-        responseText = 'Switched to 2D map view.';
-      } else if (intent.view_mode === '3D') {
-        setMapMode('3D');
-        responseText = 'Switched to 3D globe view.';
+    // 1. FIND_NEARBY
+    if (intent === 'FIND_NEARBY') {
+      const catKey = category || 'HOSPITAL';
+      const catDef = CATEGORIES[catKey] || CATEGORIES.HOSPITAL;
+
+      // Handle Contextual Query: "Which one is closest?"
+      if (context_reference === 'closest' && nearbyPlaces.length > 0) {
+        const closestPlace = [...nearbyPlaces].sort((a, b) => (a.distance || 0) - (b.distance || 0))[0];
+        setSelectedPlace(closestPlace);
+        setTargetLocation({
+          lon: closestPlace.lon,
+          lat: closestPlace.lat,
+          zoom: 16,
+          label: closestPlace.name,
+          timestamp: Date.now()
+        });
+
+        const distStr = closestPlace.distance < 1
+          ? `${Math.round(closestPlace.distance * 1000)} meters`
+          : `${closestPlace.distance} km`;
+
+        if (detectedLang === 'bn' || detectedLang === 'bn-en') {
+          responseText = `সবচেয়ে কাছের স্থান হলো ${closestPlace.name}, এটি ${distStr} দূরে।`;
+        } else if (detectedLang === 'hi' || detectedLang === 'hi-en') {
+          responseText = `सबसे नजदीकी स्थान ${closestPlace.name} है, जो ${distStr} दूर है।`;
+        } else {
+          responseText = `The closest one is ${closestPlace.name}, located ${distStr} away.`;
+        }
+      } else {
+        // Fetch nearby POIs around user location
+        let centerLat = userLocation?.lat;
+        let centerLon = userLocation?.lon;
+
+        if (!centerLat || !centerLon) {
+          // Fallback to coordinates
+          centerLat = 20.5937;
+          centerLon = 78.9629;
+        }
+
+        const pois = await fetchNearbyPOIs(centerLat, centerLon, catKey.toLowerCase());
+        setNearbyPlaces(pois);
+        setActiveCategory(catKey.toLowerCase());
+        setIsNearbyOpen(true);
+
+        if (pois && pois.length > 0) {
+          // Select and center on first POI
+          const firstPoi = pois[0];
+          setSelectedPlace(firstPoi);
+          setTargetLocation({
+            lon: firstPoi.lon,
+            lat: firstPoi.lat,
+            zoom: 15,
+            label: firstPoi.name,
+            timestamp: Date.now()
+          });
+
+          if (detectedLang === 'bn' || detectedLang === 'bn-en') {
+            responseText = `আপনার কাছাকাছি ${pois.length}টি ${catDef.label} পাওয়া গেছে।`;
+          } else if (detectedLang === 'hi' || detectedLang === 'hi-en') {
+            responseText = `आपके पास ${pois.length} ${catDef.label} मिले हैं।`;
+          } else {
+            responseText = `Found ${pois.length} ${catDef.label} locations near you.`;
+          }
+        } else {
+          responseText = `No ${catDef.label} found right nearby.`;
+        }
+
+        // Save in conversational context
+        setLastVoiceIntent({
+          intent: 'FIND_NEARBY',
+          category: catKey,
+          pois: pois,
+          timestamp: Date.now()
+        });
       }
     }
 
-    // 2. Navigation / Fly To
-    else if (intent.action === 'navigate' && intent.location) {
-      addCommandLog(`Locating ${intent.location}...`, 'system');
-      const coords = await geocode(intent.location);
+    // 2. GET_LOCATION_INFORMATION (e.g., "How far is the first one?")
+    else if (intent === 'GET_LOCATION_INFORMATION') {
+      const idx = targetIndex ?? 0;
+      const targetPlace = nearbyPlaces[idx] || selectedPlace;
+
+      if (targetPlace) {
+        setSelectedPlace(targetPlace);
+        setTargetLocation({
+          lon: targetPlace.lon,
+          lat: targetPlace.lat,
+          zoom: 16,
+          label: targetPlace.name,
+          timestamp: Date.now()
+        });
+
+        const distStr = targetPlace.distance < 1
+          ? `${Math.round(targetPlace.distance * 1000)} meters`
+          : `${targetPlace.distance} km`;
+
+        if (detectedLang === 'bn' || detectedLang === 'bn-en') {
+          responseText = `${targetPlace.name} আপনার থেকে ${distStr} দূরে।`;
+        } else if (detectedLang === 'hi' || detectedLang === 'hi-en') {
+          responseText = `${targetPlace.name} आपसे ${distStr} दूर है।`;
+        } else {
+          responseText = `${targetPlace.name} is ${distStr} away from your position.`;
+        }
+      } else {
+        responseText = `Please select or search a location first.`;
+      }
+    }
+
+    // 3. SEARCH_LOCATION / General Places
+    else if (intent === 'SEARCH_LOCATION' && location) {
+      addCommandLog(`Searching for ${location}...`, 'system');
+      const coords = await geocode(location);
       if (coords) {
         setTargetLocation({
           lon: coords.lon,
           lat: coords.lat,
-          zoom: intent.zoom === 'in' ? 15 : intent.zoom === 'out' ? 6 : 13,
-          label: coords.displayName?.split(',')[0] || intent.location,
+          zoom: 14,
+          label: coords.displayName?.split(',')[0] || location,
           timestamp: Date.now()
         });
 
-        // Also fetch nearby POIs for the searched place
+        // Also fetch POIs for searched city
         try {
-          const pois = await fetchNearbyPOIs(coords.lat, coords.lon);
+          const pois = await fetchNearbyPOIs(coords.lat, coords.lon, 'all');
           if (pois && pois.length > 0) {
             setNearbyPlaces(pois);
             setIsNearbyOpen(true);
@@ -176,22 +354,121 @@ export const useSpeech = () => {
           // ignore
         }
 
-        if (language === 'hi-IN') responseText = `${intent.location} की ओर जा रहे हैं।`;
-        else if (language === 'bn-IN') responseText = `${intent.location}-এ যাচ্ছি।`;
-        else responseText = `Navigating to ${intent.location}.`;
+        if (detectedLang === 'bn' || detectedLang === 'bn-en') {
+          responseText = `${location}-এ যাচ্ছি।`;
+        } else if (detectedLang === 'hi' || detectedLang === 'hi-en') {
+          responseText = `${location} की ओर जा रहे हैं।`;
+        } else {
+          responseText = `Navigating to ${location}.`;
+        }
       } else {
-        responseText = `Could not find "${intent.location}".`;
+        responseText = `Could not find "${location}".`;
       }
     }
 
-    // 3. Zoom Controls
-    else if (intent.action === 'zoom' && intent.zoom) {
-      setTargetLocation({ zoomOnly: intent.zoom, timestamp: Date.now() });
-      responseText = `Zoomed ${intent.zoom}.`;
+    // 4. FIND_ROUTE (Turn-by-turn navigation & polyline)
+    else if (intent === 'FIND_ROUTE') {
+      let destCoords = null;
+      let destName = '';
+
+      if (context_reference === 'selected_or_first') {
+        const p = selectedPlace || nearbyPlaces[0];
+        if (p) {
+          destCoords = { lon: p.lon, lat: p.lat };
+          destName = p.name;
+        }
+      } else if (category) {
+        const p = nearbyPlaces.find((item) => item.category === category.toLowerCase()) || nearbyPlaces[0];
+        if (p) {
+          destCoords = { lon: p.lon, lat: p.lat };
+          destName = p.name;
+        }
+      } else if (location && location !== 'CURRENT_LOCATION') {
+        const coords = await geocode(location);
+        if (coords) {
+          destCoords = { lon: coords.lon, lat: coords.lat };
+          destName = location;
+        }
+      }
+
+      const startCoords = userLocation
+        ? { lon: userLocation.lon, lat: userLocation.lat }
+        : { lon: 78.9629, lat: 20.5937 };
+
+      if (destCoords) {
+        addCommandLog(`Calculating route to ${destName}...`, 'system');
+        const routeData = await calculateRoute(startCoords, destCoords);
+        if (routeData) {
+          setActiveRoute({
+            ...routeData,
+            destinationName: destName,
+            destinationCoords: destCoords,
+            timestamp: Date.now()
+          });
+
+          // Center map between start and end
+          setTargetLocation({
+            lon: (startCoords.lon + destCoords.lon) / 2,
+            lat: (startCoords.lat + destCoords.lat) / 2,
+            zoom: 13,
+            timestamp: Date.now()
+          });
+
+          if (detectedLang === 'bn' || detectedLang === 'bn-en') {
+            responseText = `${destName}-এ পৌঁছাতে প্রায় ${routeData.durationFormatted} লাগবে (${routeData.distanceKm} কিমি)।`;
+          } else if (detectedLang === 'hi' || detectedLang === 'hi-en') {
+            responseText = `${destName} का रास्ता: दूरी ${routeData.distanceKm} किमी, लगभग ${routeData.durationFormatted} लगेंगे।`;
+          } else {
+            responseText = `Route to ${destName} found: ${routeData.distanceKm} km, approx ${routeData.durationFormatted}.`;
+          }
+        } else {
+          responseText = `Could not calculate route to ${destName}.`;
+        }
+      } else {
+        responseText = `Please specify a destination to find route.`;
+      }
     }
 
-    // 4. Locate Me
-    else if (intent.action === 'locate_me') {
+    // 5. NAVIGATE_TO (e.g. Home or destination)
+    else if (intent === 'NAVIGATE_TO') {
+      if (category === 'HOME' || location === 'HOME') {
+        const dest = homeLocation || userLocation;
+        if (dest) {
+          setTargetLocation({
+            lon: dest.lon,
+            lat: dest.lat,
+            zoom: 16,
+            label: 'Home',
+            timestamp: Date.now()
+          });
+          if (detectedLang === 'bn' || detectedLang === 'bn-en') {
+            responseText = 'বাড়ি যাওয়ার দিক নির্দেশ করা হলো।';
+          } else if (detectedLang === 'hi' || detectedLang === 'hi-en') {
+            responseText = 'घर की ओर नेविगेट किया जा रहा है।';
+          } else {
+            responseText = 'Navigating towards home.';
+          }
+        } else {
+          responseText = 'Home location set to current location.';
+          if (userLocation) setHomeLocation(userLocation);
+        }
+      } else if (location) {
+        const coords = await geocode(location);
+        if (coords) {
+          setTargetLocation({
+            lon: coords.lon,
+            lat: coords.lat,
+            zoom: 15,
+            label: coords.displayName?.split(',')[0] || location,
+            timestamp: Date.now()
+          });
+          responseText = `Navigating to ${location}.`;
+        }
+      }
+    }
+
+    // 6. SHOW_CURRENT_LOCATION / Locate Me
+    else if (intent === 'SHOW_CURRENT_LOCATION') {
       if (userLocation) {
         setTargetLocation({
           lon: userLocation.lon,
@@ -201,7 +478,13 @@ export const useSpeech = () => {
           label: userLocation.name,
           timestamp: Date.now()
         });
-        responseText = `Centered on your location (${userLocation.name}).`;
+        if (detectedLang === 'bn' || detectedLang === 'bn-en') {
+          responseText = `আপনার বর্তমান অবস্থান: ${userLocation.name}।`;
+        } else if (detectedLang === 'hi' || detectedLang === 'hi-en') {
+          responseText = `आपकी वर्तमान स्थिति: ${userLocation.name}।`;
+        } else {
+          responseText = `Centered on your location (${userLocation.name}).`;
+        }
       } else if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(async (pos) => {
           const geoInfo = await reverseGeocode(pos.coords.latitude, pos.coords.longitude);
@@ -222,32 +505,50 @@ export const useSpeech = () => {
             timestamp: Date.now()
           });
         });
-        responseText = "Finding your location...";
+        responseText = 'Finding your current position...';
       } else {
-        responseText = "Geolocation is not supported in this browser.";
+        responseText = 'Geolocation is not supported in this browser.';
       }
     }
 
-    // 5. Explore Nearby POIs
-    else if (intent.action === 'nearby' || intent.action === 'explore') {
-      const centerLat = userLocation?.lat || 20.5937;
-      const centerLon = userLocation?.lon || 78.9629;
-      const pois = await fetchNearbyPOIs(centerLat, centerLon);
-      setNearbyPlaces(pois);
-      setIsNearbyOpen(true);
-      responseText = `Found ${pois.length} places nearby.`;
+    // 7. CHANGE_MAP_LAYER (2D / 3D / Satellite)
+    else if (intent === 'CHANGE_MAP_LAYER') {
+      if (parsed.layer === '3D') {
+        setMapMode('3D');
+        responseText = 'Switched to 3D globe view.';
+      } else if (parsed.layer === '2D') {
+        setMapMode('2D');
+        responseText = 'Switched to 2D map view.';
+      } else if (parsed.layer === 'satellite') {
+        setMapLayer('satellite');
+        responseText = 'Switched to satellite layer.';
+      }
+    }
+
+    // 8. ZOOM_IN / ZOOM_OUT
+    else if (intent === 'ZOOM_IN') {
+      setTargetLocation({ zoomOnly: 'in', timestamp: Date.now() });
+      responseText = 'Zoomed in.';
+    } else if (intent === 'ZOOM_OUT') {
+      setTargetLocation({ zoomOnly: 'out', timestamp: Date.now() });
+      responseText = 'Zoomed out.';
+    }
+
+    // 9. CLEAR_MAP
+    else if (intent === 'CLEAR_MAP') {
+      setActiveRoute(null);
+      setIsNearbyOpen(false);
+      responseText = 'Map cleared.';
     }
 
     if (responseText) {
       addCommandLog(responseText, 'system');
-      setVoiceStatus('response');
-      setFeedback(responseText, 5000);
-      speak(responseText);
+      setFeedback(responseText, 'response', 6000);
+      speak(responseText, detectedLang);
     } else {
-      const fallback = "Command processed.";
+      const fallback = 'Command processed.';
       addCommandLog(fallback, 'system');
-      setVoiceStatus('response');
-      setFeedback(fallback, 3000);
+      setFeedback(fallback, 'response', 3000);
     }
   };
 
@@ -263,10 +564,11 @@ export const useSpeech = () => {
       setVoiceStatus('idle');
     } else {
       try {
+        // If clarifying, cancel clarification on fresh voice trigger
+        if (pendingClarification) setPendingClarification(null);
         recognitionRef.current.start();
       } catch (e) {
         console.warn('Recognition start error:', e);
-        // If already started, abort and retry
         try {
           recognitionRef.current.abort();
           setTimeout(() => recognitionRef.current.start(), 100);
@@ -282,7 +584,21 @@ export const useSpeech = () => {
     voiceStatus,
     voiceMessage,
     transcript,
+    detectedLanguage,
+    pendingClarification,
     toggleListening,
-    processManualCommand: processCommand
+    processManualCommand: processCommand,
+    confirmClarification: () => {
+      if (pendingClarification) {
+        const intent = pendingClarification;
+        setPendingClarification(null);
+        executeIntent(intent);
+      }
+    },
+    cancelClarification: () => {
+      setPendingClarification(null);
+      setVoiceStatus('idle');
+      setVoiceMessage('');
+    }
   };
 };

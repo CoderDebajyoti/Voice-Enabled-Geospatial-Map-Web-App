@@ -8,7 +8,9 @@ const Map3D = () => {
   const cesiumViewer = useRef(null);
   const targetEntityRef = useRef(null);
   const userEntityRef = useRef(null);
-  const { mapMode, targetLocation, userLocation } = useMapState();
+  const routeEntityRef = useRef(null);
+
+  const { mapMode, targetLocation, userLocation, activeRoute } = useMapState();
 
   useEffect(() => {
     // Initialize Cesium Viewer
@@ -62,6 +64,28 @@ const Map3D = () => {
       });
     }
   }, [userLocation]);
+
+  // Update Route Polyline in 3D
+  useEffect(() => {
+    if (cesiumViewer.current) {
+      if (routeEntityRef.current) {
+        cesiumViewer.current.entities.remove(routeEntityRef.current);
+        routeEntityRef.current = null;
+      }
+
+      if (activeRoute && activeRoute.coordinates && activeRoute.coordinates.length > 1) {
+        const flatCoords = activeRoute.coordinates.flat();
+        routeEntityRef.current = cesiumViewer.current.entities.add({
+          polyline: {
+            positions: Cartesian3.fromDegreesArray(flatCoords),
+            width: 4.5,
+            material: Color.fromCssColorString('#2563eb'),
+            clampToGround: true
+          }
+        });
+      }
+    }
+  }, [activeRoute]);
 
   // Handle Target Navigation & Zoom in 3D
   useEffect(() => {

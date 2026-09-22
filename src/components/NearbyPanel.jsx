@@ -1,17 +1,22 @@
 import React, { useState } from 'react';
 import { useMapState } from '../context/MapStateContext';
 import { useLocation } from '../hooks/useLocation';
+import { calculateRoute } from '../services/routingService';
 import {
-  MapPin,
+  Compass,
+  Crosshair,
+  X,
+  Navigation2,
+  HeartPulse,
+  Pill,
   Utensils,
   Bus,
+  Bath,
+  CircleDollarSign,
+  Fuel,
+  Shield,
   Trees,
-  Landmark,
-  Navigation2,
-  X,
-  ChevronRight,
-  Crosshair,
-  Compass
+  Landmark
 } from 'lucide-react';
 
 const NearbyPanel = () => {
@@ -22,30 +27,40 @@ const NearbyPanel = () => {
     selectedPlace,
     setSelectedPlace,
     setTargetLocation,
-    userLocation
+    userLocation,
+    activeCategory,
+    setActiveCategory,
+    setActiveRoute,
+    addCommandLog
   } = useMapState();
 
   const { recenterUserLocation } = useLocation();
-  const [activeCategory, setActiveCategory] = useState('all');
 
   if (!isNearbyOpen) return null;
 
   const filteredPlaces = nearbyPlaces.filter((p) => {
     if (activeCategory === 'all') return true;
-    return p.category === activeCategory;
+    const cat = (p.category || '').toLowerCase();
+    return cat.includes(activeCategory.toLowerCase());
   });
 
   const getCategoryIcon = (category) => {
-    switch (category) {
-      case 'food':
-        return <Utensils size={13} className="text-amber-400" />;
-      case 'transit':
-        return <Bus size={13} className="text-indigo-400" />;
-      case 'parks':
-        return <Trees size={13} className="text-emerald-400" />;
-      default:
-        return <Landmark size={13} className="text-blue-400" />;
-    }
+    const c = (category || '').toLowerCase();
+    if (c.includes('hospital')) return <HeartPulse size={13} className="text-rose-400" />;
+    if (c.includes('pharmacy')) return <Pill size={13} className="text-emerald-400" />;
+    if (c.includes('food') || c.includes('restaurant') || c.includes('cafe'))
+      return <Utensils size={13} className="text-amber-400" />;
+    if (c.includes('restroom') || c.includes('toilet'))
+      return <Bath size={13} className="text-cyan-400" />;
+    if (c.includes('atm') || c.includes('bank'))
+      return <CircleDollarSign size={13} className="text-blue-400" />;
+    if (c.includes('transit') || c.includes('station'))
+      return <Bus size={13} className="text-indigo-400" />;
+    if (c.includes('fuel') || c.includes('petrol'))
+      return <Fuel size={13} className="text-orange-400" />;
+    if (c.includes('police')) return <Shield size={13} className="text-blue-500" />;
+    if (c.includes('park')) return <Trees size={13} className="text-emerald-400" />;
+    return <Landmark size={13} className="text-slate-400" />;
   };
 
   const handleSelectPlace = (place) => {
@@ -59,8 +74,54 @@ const NearbyPanel = () => {
     });
   };
 
+  const handleRouteToPlace = async (e, place) => {
+    e.stopPropagation();
+    setSelectedPlace(place);
+
+    const startCoords = userLocation
+      ? { lon: userLocation.lon, lat: userLocation.lat }
+      : { lon: 78.9629, lat: 20.5937 };
+
+    const endCoords = { lon: place.lon, lat: place.lat };
+
+    addCommandLog(`Routing to ${place.name}...`, 'system');
+    const routeData = await calculateRoute(startCoords, endCoords);
+
+    if (routeData) {
+      setActiveRoute({
+        ...routeData,
+        destinationName: place.name,
+        destinationCoords: endCoords,
+        timestamp: Date.now()
+      });
+
+      setTargetLocation({
+        lon: (startCoords.lon + endCoords.lon) / 2,
+        lat: (startCoords.lat + endCoords.lat) / 2,
+        zoom: 13,
+        timestamp: Date.now()
+      });
+
+      addCommandLog(
+        `Route to ${place.name}: ${routeData.distanceKm} km (~${routeData.durationFormatted})`,
+        'system'
+      );
+    }
+  };
+
+  const categories = [
+    { id: 'all', label: 'All' },
+    { id: 'hospital', label: 'Hospitals' },
+    { id: 'pharmacy', label: 'Pharmacies' },
+    { id: 'food', label: 'Food & Dining' },
+    { id: 'restroom', label: 'Restrooms' },
+    { id: 'atm', label: 'ATM & Banks' },
+    { id: 'transit', label: 'Transit' },
+    { id: 'petrol', label: 'Fuel / Petrol' }
+  ];
+
   return (
-    <div className="w-full max-w-sm bg-slate-900/95 border border-slate-700/80 rounded-2xl shadow-xl backdrop-blur-md text-slate-100 overflow-hidden pointer-events-auto select-none flex flex-col max-h-[380px] animate-fade-in">
+    <div className="w-full max-w-sm bg-slate-900/95 border border-slate-700/80 rounded-2xl shadow-xl backdrop-blur-md text-slate-100 overflow-hidden pointer-events-auto select-none flex flex-col max-h-[400px] animate-fade-in">
       {/* Header */}
       <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between bg-slate-900/60">
         <div className="flex items-center gap-2">
@@ -69,10 +130,10 @@ const NearbyPanel = () => {
           </div>
           <div>
             <h3 className="text-xs font-semibold text-slate-100">
-              {userLocation?.name ? `Nearby ${userLocation.name}` : 'Nearby Places'}
+              {userLocation?.name ? `Near ${userLocation.name}` : 'Nearby Results'}
             </h3>
             <p className="text-[10px] text-slate-400">
-              {filteredPlaces.length} points of interest discovered
+              {filteredPlaces.length} locations discovered
             </p>
           </div>
         </div>
@@ -97,15 +158,9 @@ const NearbyPanel = () => {
         </div>
       </div>
 
-      {/* Category Pills */}
+      {/* Category Filter Tabs */}
       <div className="px-3 py-2 border-b border-slate-800/80 flex items-center gap-1.5 overflow-x-auto custom-scrollbar bg-slate-900/40">
-        {[
-          { id: 'all', label: 'All' },
-          { id: 'landmark', label: 'Landmarks' },
-          { id: 'transit', label: 'Transit' },
-          { id: 'food', label: 'Food & Cafes' },
-          { id: 'parks', label: 'Parks' }
-        ].map((cat) => (
+        {categories.map((cat) => (
           <button
             key={cat.id}
             onClick={() => setActiveCategory(cat.id)}
@@ -139,9 +194,9 @@ const NearbyPanel = () => {
                     : 'bg-slate-800/40 hover:bg-slate-800/90 border border-transparent hover:border-slate-700/60'
                 }`}
               >
-                <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                <div className="flex items-center gap-2.5 min-w-0 pr-2 flex-1">
                   <div className="w-7 h-7 rounded-lg bg-slate-800 border border-slate-700/70 flex items-center justify-center flex-shrink-0">
-                    {getCategoryIcon(place.category)}
+                    {getCategoryIcon(place.category || place.type)}
                   </div>
                   <div className="min-w-0">
                     <div className="text-xs font-medium text-slate-200 truncate">{place.name}</div>
@@ -159,7 +214,13 @@ const NearbyPanel = () => {
                         : `${place.distance} km`}
                     </span>
                   )}
-                  <Navigation2 size={12} className="text-slate-400 hover:text-blue-400" />
+                  <button
+                    onClick={(e) => handleRouteToPlace(e, place)}
+                    className="p-1 rounded-md bg-slate-800 hover:bg-blue-600 hover:text-white text-slate-400 transition-colors"
+                    title="Find route to this location"
+                  >
+                    <Navigation2 size={13} />
+                  </button>
                 </div>
               </div>
             );

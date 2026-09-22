@@ -4,18 +4,19 @@ const MapStateContext = createContext();
 
 export const MapStateProvider = ({ children }) => {
   const [mapMode, setMapMode] = useState('2D'); // '2D' or '3D'
-  const [language, setLanguage] = useState('en-US'); // 'en-US', 'hi-IN', 'bn-IN'
+  const [language, setLanguage] = useState('auto'); // 'auto', 'en-US', 'bn-IN', 'hi-IN'
+  const [detectedLanguage, setDetectedLanguage] = useState(null); // { code: 'bn', label: 'বাংলা' }
   const [mapLayer, setMapLayer] = useState('streets'); // 'streets', 'satellite', 'light'
   
   // Commands & Interaction history
   const [commandsLog, setCommandsLog] = useState([]);
   const [isLogOpen, setIsLogOpen] = useState(false);
 
-  // Target navigation location: { lon, lat, zoom, label, timestamp, zoomOnly }
+  // Target navigation location: { lon, lat, zoom, label, timestamp, zoomOnly, isUserLocation }
   const [targetLocation, setTargetLocation] = useState(null);
 
-  // User location state
-  const [userLocation, setUserLocation] = useState(null); // { lat, lon, name, accuracy, city }
+  // User location state: { lat, lon, name, accuracy, city, fullAddress }
+  const [userLocation, setUserLocation] = useState(null);
   const [locationPermission, setLocationPermission] = useState('idle'); // 'idle' | 'loading' | 'granted' | 'denied' | 'error'
   const [locationError, setLocationError] = useState(null);
 
@@ -25,17 +26,26 @@ export const MapStateProvider = ({ children }) => {
   const [isNearbyOpen, setIsNearbyOpen] = useState(false);
   const [activeCategory, setActiveCategory] = useState('all');
 
-  // Voice recognition status: 'idle' | 'listening' | 'processing' | 'response'
-  const [voiceStatus, setVoiceStatus] = useState('idle');
+  // Voice recognition & Conversational Context
+  const [voiceStatus, setVoiceStatus] = useState('idle'); // 'idle' | 'listening' | 'processing' | 'response' | 'clarifying'
   const [voiceMessage, setVoiceMessage] = useState('');
+  const [lastVoiceIntent, setLastVoiceIntent] = useState(null);
+  const [pendingClarification, setPendingClarification] = useState(null);
 
-  const addCommandLog = useCallback((text, type = 'user') => {
+  // Active Navigation Route: { coordinates: [[lon, lat], ...], distanceKm, durationFormatted, steps }
+  const [activeRoute, setActiveRoute] = useState(null);
+
+  // Saved Home / Work coordinates (defaulting to user location or preset)
+  const [homeLocation, setHomeLocation] = useState(null);
+
+  const addCommandLog = useCallback((text, type = 'user', extra = null) => {
     setCommandsLog((prev) => [
       ...prev,
       {
         id: `${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
         text,
         type,
+        extra,
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
       }
     ]);
@@ -52,6 +62,8 @@ export const MapStateProvider = ({ children }) => {
         setMapMode,
         language,
         setLanguage,
+        detectedLanguage,
+        setDetectedLanguage,
         mapLayer,
         setMapLayer,
         commandsLog,
@@ -78,7 +90,15 @@ export const MapStateProvider = ({ children }) => {
         voiceStatus,
         setVoiceStatus,
         voiceMessage,
-        setVoiceMessage
+        setVoiceMessage,
+        lastVoiceIntent,
+        setLastVoiceIntent,
+        pendingClarification,
+        setPendingClarification,
+        activeRoute,
+        setActiveRoute,
+        homeLocation,
+        setHomeLocation
       }}
     >
       {children}
