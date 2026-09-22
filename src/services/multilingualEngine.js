@@ -5,6 +5,7 @@
  * - English, Bengali, Hindi, and code-switching (Banglish, Hinglish, Bengali + English, Hindi + English)
  * - Broken English, grammatically incorrect sentences, incomplete queries
  * - Approximate pronunciations, phonetic variations, and transliteration
+ * - Semantic category/type extraction (distinguishing categories from place names)
  * - Conversational context ("Which one is closest?", "How far is the first one?")
  * - Category extraction for 14+ geospatial entity types
  * - Intelligent clarification generation for ambiguous inputs
@@ -28,14 +29,14 @@ export const detectLanguage = (text) => {
     'amar', 'amr', 'kache', 'kacher', 'kachakachi', 'kothay', 'kuthe', 'dekhao', 'dhekhao',
     'haspatal', 'daktar', 'osudh', 'oshudh', 'khabar', 'khawa', 'restura', 'shouchalay',
     'paykhana', 'bari', 'ghar', 'thana', 'biman', 'bondor', 'rel', 'taka', 'jabo', 'jete',
-    'lagbe', 'chai', 'hobe', 'eta', 'oita', 'kontar', 'prothom', 'ekta'
+    'lagbe', 'chai', 'hobe', 'eta', 'oita', 'kontar', 'prothom', 'ekta', 'niye', 'cholo'
   ];
 
   // Check for common Romanized Hindi (Hinglish) words
   const hinglishLexicon = [
     'mere', 'paas', 'pass', 'kahan', 'kidhar', 'dikhao', 'batao', 'dhundo', 'aspatal',
     'dawai', 'khana', 'shauchalay', 'ghar', 'jana', 'chahiye', 'kareeb', 'najdeek',
-    'pehla', 'kaun', 'sa', 'kitni', 'door', 'hai', 'h'
+    'pehla', 'kaun', 'sa', 'kitni', 'door', 'hai', 'h', 'le', 'chalo', 'sabse'
   ];
 
   const lowerTokens = str.toLowerCase().split(/\s+/);
@@ -92,7 +93,6 @@ export const fuzzyMatchWord = (word, candidates, threshold = 2) => {
 
   for (const candidate of candidates) {
     if (candidate === cleanWord) return candidate;
-    // Length tolerance
     if (Math.abs(cleanWord.length - candidate.length) <= threshold) {
       if (levenshteinDistance(cleanWord, candidate) <= threshold) {
         return candidate;
@@ -104,10 +104,24 @@ export const fuzzyMatchWord = (word, candidates, threshold = 2) => {
 
 // 3. Category Registry (Multi-language & Phonetic Romanized Tokens)
 export const CATEGORIES = {
+  CAFE: {
+    id: 'CAFE',
+    label: 'Cafe & Coffee Shop',
+    osmSearch: 'amenity=cafe',
+    color: '#d97706', // warm amber/brown
+    keywords: [
+      'coffee shop', 'coffee-shop', 'coffeeshop', 'coffee house', 'coffee place', 'coffee bar',
+      'coffee', 'cafe', 'cafes', 'espresso', 'roaster', 'roasters', 'bakery', 'tea corner',
+      'tea shop', 'chai point', 'chai stall', 'tea stall', 'chai', 'cha', 'kofi', 'coffe',
+      'কফি শপ', 'কফি হাউস', 'কফি দোকান', 'কফি', 'ক্যাফে', 'চা দোকান', 'চা স্টল', 'চা',
+      'कॉफी शॉप', 'कॉफ़ी शॉप', 'कॉफी हाउस', 'कॉफी', 'कॉफ़ी', 'कैफ़े', 'कैफे', 'चाय की दुकान', 'चाय'
+    ],
+    brokenPhrases: ['need coffee', 'want coffee', 'tea break', 'কফি খাব', 'চা খাব', 'कॉफी पीनी है', 'चाय पीनी है']
+  },
   HOSPITAL: {
     id: 'HOSPITAL',
     label: 'Hospital & Clinic',
-    osmSearch: 'hospital clinic doctor',
+    osmSearch: 'amenity=hospital',
     color: '#ef4444', // red
     keywords: [
       'hospital', 'hospitals', 'clinic', 'clinics', 'doctor', 'doctors', 'emergency',
@@ -121,33 +135,33 @@ export const CATEGORIES = {
   PHARMACY: {
     id: 'PHARMACY',
     label: 'Pharmacy & Medical Store',
-    osmSearch: 'pharmacy chemist medicine',
+    osmSearch: 'amenity=pharmacy',
     color: '#10b981', // emerald
     keywords: [
-      'pharmacy', 'chemist', 'drugstore', 'medicine', 'medicines', 'meds', 'medical store',
-      'dawai', 'davai', 'osudh', 'oshudh', 'oshudher', 'dokan', 'chemst', 'farmacy',
+      'pharmacy', 'chemist', 'drugstore', 'medicine store', 'medicine', 'medicines', 'meds', 'medical store',
+      'dawai', 'davai', 'osudh', 'oshudh', 'oshudher dokan', 'chemst', 'farmacy',
       'ফার্মেসি', 'ঔষধ', 'ওষুধ', 'ঔষধের দোকান', 'মেডিসিন',
-      'फार्मेसी', 'दवा', 'दवाई', 'केमिस्ट', 'दवाखाना'
+      'फार्मेसी', 'दवा', 'दवाई', 'केमिस्ट', 'दवाखाना', 'दवा की दुकान'
     ]
   },
   RESTAURANT: {
     id: 'RESTAURANT',
     label: 'Restaurant & Food',
-    osmSearch: 'restaurant cafe food fast_food eatery',
+    osmSearch: 'amenity=restaurant',
     color: '#f59e0b', // amber
     keywords: [
-      'restaurant', 'restaurants', 'resturent', 'resturant', 'food', 'eatery', 'dining',
-      'dinner', 'lunch', 'breakfast', 'meal', 'dhaba', 'hotel to eat', 'bhojanalay',
+      'restaurant', 'restaurants', 'resturent', 'resturant', 'food eatery', 'eatery', 'dining',
+      'food', 'dinner', 'lunch', 'breakfast', 'meal', 'dhaba', 'hotel to eat', 'bhojanalay',
       'khana', 'khabar', 'khabar dokan', 'khawa', 'restura', 'biryani',
-      'রেস্তোরাঁ', 'খাবার', 'খাবারের দোকান', 'হোটেল', 'রেস্টুরেন্ট', 'বিরিয়ানি',
-      'रेस्तरां', 'रेस्टोरेंट', 'खाना', 'भोजनालय', 'ढाबा', 'होटल'
+      'রেস্তোরাঁ', 'খাবার', 'খাবারের দোকান', 'রেস্টুরেন্ট', 'বিরিয়ানি',
+      'रेस्तरां', 'रेस्टोरेंट', 'खाना', 'भोजनालय', 'ढाबा'
     ],
-    brokenPhrases: ['hungry', 'want food', 'need food', 'পেট খারাপ', 'ক্ষিদে পেয়েছে', 'भूख लगी']
+    brokenPhrases: ['hungry', 'want food', 'need food', 'ক্ষিদে পেয়েছে', 'भूख लगी']
   },
   HOTEL: {
     id: 'HOTEL',
     label: 'Hotel & Lodging',
-    osmSearch: 'hotel motel guest_house resort',
+    osmSearch: 'tourism=hotel',
     color: '#8b5cf6', // purple
     keywords: [
       'hotel', 'hotels', 'lodging', 'lodge', 'guest house', 'motel', 'resort', 'stay',
@@ -159,7 +173,7 @@ export const CATEGORIES = {
   RESTROOM: {
     id: 'RESTROOM',
     label: 'Restroom & Toilet',
-    osmSearch: 'toilets restroom washroom',
+    osmSearch: 'amenity=toilets',
     color: '#06b6d4', // cyan
     keywords: [
       'restroom', 'toilet', 'toilets', 'washroom', 'washrooms', 'bathroom', 'lavatory',
@@ -172,7 +186,7 @@ export const CATEGORIES = {
   ATM: {
     id: 'ATM',
     label: 'ATM & Cash Machine',
-    osmSearch: 'atm cash_machine',
+    osmSearch: 'amenity=atm',
     color: '#3b82f6', // blue
     keywords: [
       'atm', 'cash machine', 'cash dispenser', 'money machine', 'taka tolar', 'paisa nikalna',
@@ -183,7 +197,7 @@ export const CATEGORIES = {
   BANK: {
     id: 'BANK',
     label: 'Bank',
-    osmSearch: 'bank',
+    osmSearch: 'amenity=bank',
     color: '#6366f1', // indigo
     keywords: [
       'bank', 'banks', 'benk',
@@ -194,32 +208,32 @@ export const CATEGORIES = {
   PETROL_PUMP: {
     id: 'PETROL_PUMP',
     label: 'Petrol Pump & Fuel',
-    osmSearch: 'fuel gas_station petrol',
+    osmSearch: 'amenity=fuel',
     color: '#f97316', // orange
     keywords: [
-      'petrol', 'petrol pump', 'gas station', 'fuel', 'diesel', 'cng', 'tel pump', 'oil',
-      'পেট্রোল', 'পেট্রোল পাম্প', 'তেল পাম্প', 'জ্বালানি',
+      'petrol pump', 'gas station', 'fuel station', 'petrol', 'fuel', 'diesel', 'cng', 'tel pump', 'oil',
+      'পেট্রোল পাম্প', 'তেল পাম্প', 'পেট্রোল', 'জ্বালানি',
       'पेट्रोल पंप', 'गैस स्टेशन', 'फ्यूल', 'डीजल'
     ]
   },
   POLICE_STATION: {
     id: 'POLICE_STATION',
     label: 'Police Station',
-    osmSearch: 'police',
+    osmSearch: 'amenity=police',
     color: '#1e40af', // dark blue
     keywords: [
-      'police', 'police station', 'cop', 'thana', 'police chowki', 'kotwali',
-      'থানা', 'পুলিশ', 'পুলিশ স্টেশন', 'ফাঁড়ি',
-      'थाना', 'पुलिस', 'पुलिस स्टेशन', 'चौकी'
+      'police station', 'police outpost', 'police chowki', 'police', 'cop', 'thana', 'kotwali',
+      'থানা', 'পুলিশ স্টেশন', 'পুলিশ', 'ফাঁড়ি',
+      'थाना', 'पुलिस स्टेशन', 'पुलिस', 'चौकी'
     ]
   },
   BUS_STOP: {
     id: 'BUS_STOP',
     label: 'Bus Stop & Stand',
-    osmSearch: 'bus_stop bus_station platform',
+    osmSearch: 'highway=bus_stop',
     color: '#e11d48', // rose
     keywords: [
-      'bus', 'bus stop', 'bus stand', 'bus station', 'bus depot',
+      'bus stop', 'bus stand', 'bus station', 'bus depot', 'bus',
       'বাস স্টপ', 'বাস স্ট্যান্ড', 'বাস ডিপো',
       'बस स्टॉप', 'बस स्टैंड', 'बस स्टेशन'
     ]
@@ -227,10 +241,10 @@ export const CATEGORIES = {
   RAILWAY_STATION: {
     id: 'RAILWAY_STATION',
     label: 'Railway Station',
-    osmSearch: 'railway station train_station',
+    osmSearch: 'railway=station',
     color: '#0284c7', // light blue
     keywords: [
-      'train', 'train station', 'railway', 'railway station', 'metro', 'metro station', 'subway',
+      'railway station', 'train station', 'metro station', 'train', 'railway', 'metro', 'subway',
       'রেলওয়ে স্টেশন', 'ট্রেন স্টেশন', 'মেট্রো স্টেশন', 'রেল স্টেশন',
       'रेलवे स्टेशन', 'ट्रेन स्टेशन', 'मेट्रो स्टेशन'
     ]
@@ -238,7 +252,7 @@ export const CATEGORIES = {
   AIRPORT: {
     id: 'AIRPORT',
     label: 'Airport',
-    osmSearch: 'aerodrome airport flight',
+    osmSearch: 'aeroway=aerodrome',
     color: '#0d9488', // teal
     keywords: [
       'airport', 'aerodrome', 'flight', 'airfield', 'biman bondor', 'aeroport',
@@ -246,21 +260,10 @@ export const CATEGORIES = {
       'हवाई अड्डा', 'एयरपोर्ट', 'विमानक्षेत्र'
     ]
   },
-  CAFE: {
-    id: 'CAFE',
-    label: 'Cafe & Tea',
-    osmSearch: 'cafe coffee tea',
-    color: '#d97706',
-    keywords: [
-      'cafe', 'coffee', 'tea', 'coffee shop', 'chai', 'cha',
-      'ক্যাফে', 'চা দোকান', 'কফি শপ',
-      'कैफ़े', 'कॉफ़ी शॉप', 'चाय की दुकान'
-    ]
-  },
   HOME: {
     id: 'HOME',
     label: 'Home',
-    osmSearch: 'residential',
+    osmSearch: 'place=house',
     color: '#3b82f6',
     keywords: [
       'home', 'my home', 'house', 'bari', 'baari', 'ghar', 'badi',
@@ -276,15 +279,24 @@ export const extractCategory = (text) => {
   const clean = text.toLowerCase();
   const tokens = clean.split(/[\s,?.!।]+/);
 
+  // Collect all category keywords sorted by length descending so multi-word phrases match first
+  const allKeywords = [];
   for (const [catKey, catDef] of Object.entries(CATEGORIES)) {
-    // 1. Direct phrase check
     for (const kw of catDef.keywords) {
-      if (clean.includes(kw.toLowerCase())) {
-        return catKey;
-      }
+      allKeywords.push({ kw: kw.toLowerCase(), catKey, len: kw.length });
     }
+  }
+  allKeywords.sort((a, b) => b.len - a.len);
 
-    // 2. Broken phrase context
+  // 1. Direct phrase check (longer phrases take precedence)
+  for (const item of allKeywords) {
+    if (clean.includes(item.kw)) {
+      return item.catKey;
+    }
+  }
+
+  // 2. Broken phrase context
+  for (const [catKey, catDef] of Object.entries(CATEGORIES)) {
     if (catDef.brokenPhrases) {
       for (const phrase of catDef.brokenPhrases) {
         if (clean.includes(phrase.toLowerCase())) {
@@ -292,13 +304,15 @@ export const extractCategory = (text) => {
         }
       }
     }
+  }
 
-    // 3. Token-level fuzzy check
-    for (const token of tokens) {
-      if (token.length >= 4) {
+  // 3. Token-level fuzzy check
+  for (const token of tokens) {
+    if (token.length >= 4) {
+      for (const [catKey, catDef] of Object.entries(CATEGORIES)) {
         for (const kw of catDef.keywords) {
           if (!kw.includes(' ') && kw.length >= 4) {
-            if (levenshteinDistance(token, kw) <= 1) {
+            if (levenshteinDistance(token, kw.toLowerCase()) <= 1) {
               return catKey;
             }
           }
@@ -316,18 +330,37 @@ export const isNearbyQuery = (text) => {
   const nearbyPatterns = [
     'near me', 'nearby', 'near', 'around me', 'closest', 'nearest', 'close to me',
     'around here', 'close by', 'in vicinity', 'here',
-    // Bengali script & transliterated
     'আমার কাছে', 'কাছে', 'কাছাকাছি', 'কাছের', 'পাশে', 'আশেপাশে', 'এখানে',
     'amar kache', 'amr kache', 'kache', 'kacher', 'kachakachi', 'ashepash',
-    // Hindi script & transliterated
     'मेरे पास', 'पास में', 'पास', 'आस पास', 'आस-पास', 'नजदीक', 'करीब', 'यहीं',
     'mere paas', 'mere pass', 'paas mein', 'pass me', 'najdeek', 'kareeb', 'aas paas'
   ];
+  return nearbyPatterns.some(p => clean.includes(p));
+};
 
-  for (const pattern of nearbyPatterns) {
-    if (clean.includes(pattern)) return true;
-  }
-  return false;
+// Detect Navigation action verbs
+export const isNavActionQuery = (text) => {
+  const clean = text.toLowerCase();
+  const navActionPhrases = [
+    'take me to', 'take me', 'navigate to', 'navigate me to', 'drive me to', 'drive to',
+    'lead me to', 'bring me to', 'guide me to', 'head to', 'go to',
+    'নিয়ে চলো', 'নিয়ে যাও', 'পৌঁছে দাও', 'যেতে চাই', 'যেতে হবে', 'চলো',
+    'লে चलो', 'ले जाओ', 'पहुंचा दो', 'जाना है', 'चलें'
+  ];
+  return navActionPhrases.some(p => clean.includes(p));
+};
+
+// Detect "Nearest" / "Closest" intent
+export const isNearestQuery = (text) => {
+  const clean = text.toLowerCase();
+  const nearestPhrases = [
+    'nearest', 'closest', 'most nearby',
+    'সবচেয়ে কাছের', 'সবথেকে কাছের', 'কাছের', 'সবচেয়ে কাছে', 'সবথেকে কাছে',
+    'kacher', 'shobcheye kacher', 'sobcheye kacher',
+    'सबसे नज़दीकी', 'सबसे नजदीकी', 'सबसे पास', 'नज़दीकी', 'नजदीकी',
+    'sabse paas', 'sabse najdeeki', 'paas wala'
+  ];
+  return nearestPhrases.some(p => clean.includes(p));
 };
 
 // 6. Conversational Context Resolver
@@ -354,7 +387,7 @@ export const resolveConversationalContext = (text, lastContext) => {
     }
   }
 
-  // Contextual follow-up 2: "How far is the first one?" / "How far is the second one?"
+  // Contextual follow-up 2: "How far is the first one?"
   const ordinalPatterns = [
     { pattern: /(?:how far is the|how far is|distance of|distance to)\s+(first|1st|second|2nd|third|3rd)/i, indexMap: { first: 0, '1st': 0, second: 1, '2nd': 1, third: 2, '3rd': 2 } },
     { pattern: /(প্রথমটা|দ্বিতীয়টা|তৃতীয়টা)\s*(কত দূর|দূরত্ব কত)/i, indexMap: { 'প্রথমটা': 0, 'দ্বিতীয়টা': 1, 'তৃতীয়টা': 2 } },
@@ -377,7 +410,7 @@ export const resolveConversationalContext = (text, lastContext) => {
     }
   }
 
-  // Contextual follow-up 3: "Take me there" / "Route to it" / "Show route"
+  // Contextual follow-up 3: "Take me there" / "Route to it"
   const routePatterns = [
     'take me there', 'route to it', 'how do i get there', 'navigate there', 'go there',
     'ওখানে যাব', 'রাস্তা দেখাও', 'কীভাবে যাব', 'okhane jabo', 'rasta dekhao',
@@ -404,6 +437,7 @@ export const generateClarification = (categoryKey, detectedLang) => {
 
   if (detectedLang === 'bn' || detectedLang === 'bn-en') {
     const bnNameMap = {
+      CAFE: 'কফি শপ / ক্যাফে',
       HOSPITAL: 'হাসপাতাল',
       PHARMACY: 'ঔষধের দোকান',
       RESTAURANT: 'রেস্তোরাঁ / খাবার দোকান',
@@ -415,7 +449,6 @@ export const generateClarification = (categoryKey, detectedLang) => {
       BUS_STOP: 'বাস স্টপ',
       RAILWAY_STATION: 'রেলওয়ে স্টেশন',
       AIRPORT: 'বিমানবন্দর',
-      CAFE: 'ক্যাফে',
       HOME: 'বাড়ি'
     };
     const bnName = bnNameMap[categoryKey] || 'জায়গা';
@@ -424,6 +457,7 @@ export const generateClarification = (categoryKey, detectedLang) => {
 
   if (detectedLang === 'hi' || detectedLang === 'hi-en') {
     const hiNameMap = {
+      CAFE: 'कैफे / कॉफी शॉप',
       HOSPITAL: 'अस्पताल',
       PHARMACY: 'दवा की दुकान',
       RESTAURANT: 'रेस्टोरेंट / खाना',
@@ -435,7 +469,6 @@ export const generateClarification = (categoryKey, detectedLang) => {
       BUS_STOP: 'बस स्टॉप',
       RAILWAY_STATION: 'रेलवे स्टेशन',
       AIRPORT: 'हवाई अड्डा',
-      CAFE: 'कैफ़े',
       HOME: 'घर'
     };
     const hiName = hiNameMap[categoryKey] || 'जगह';
@@ -487,10 +520,8 @@ export const parseMultilingualQuery = (rawText, lastContext = null) => {
   const locateMePatterns = [
     'locate me', 'my location', 'where am i', 'find me', 'find my location', 'center me',
     'show current location', 'where i am', 'am i here',
-    // Bengali
     'আমার অবস্থান', 'আমি কোথায়', 'আমাকে দেখাও', 'লোকেট মি', 'আমার লোকেশন',
     'amar obosthan', 'ami kothay', 'amake dekhao', 'amar location',
-    // Hindi
     'मेरी स्थिति', 'मेरी लोकेशन', 'मैं कहाँ हूँ', 'मुझे ढूंढो', 'मेरी जगह',
     'meri location', 'main kahan hoon', 'meri sthiti'
   ];
@@ -507,7 +538,7 @@ export const parseMultilingualQuery = (rawText, lastContext = null) => {
     };
   }
 
-  // Step 4: Check for Route / Navigation ("Route to airport", "How to go to Paris")
+  // Step 4: Check for Route Keywords
   const routeKeywords = [
     'route to', 'directions to', 'how to reach', 'path to', 'way to', 'how do i go to',
     'রাস্তা দেখাও', 'যাওয়ার রাস্তা', 'পথ দেখাও',
@@ -517,7 +548,7 @@ export const parseMultilingualQuery = (rawText, lastContext = null) => {
   ];
   const isRouteQuery = routeKeywords.some(rk => clean.includes(rk));
 
-  // Step 5: Check Map Controls (Zoom in, Zoom out, 2D, 3D, Map Layers, Clear)
+  // Step 5: Check Map Controls (Zoom, Layers, Clear)
   if (
     clean.includes('zoom in') || clean.includes('কাছে আনো') || clean.includes('बड़ा करो') ||
     clean.includes('ज़ूम इन') || clean.includes('zoom koro')
@@ -599,13 +630,14 @@ export const parseMultilingualQuery = (rawText, lastContext = null) => {
     };
   }
 
-  // Step 6: Category-focused queries (FIND_NEARBY or NAVIGATE_TO)
+  // Step 6: Category-focused queries (NAVIGATE_TO or FIND_NEARBY)
   if (category) {
-    // Check if category is HOME (e.g. "বাড়ি যেতে চাই", "I want go home", "take me home")
+    // Check if category is HOME
     if (category === 'HOME') {
       return {
         intent: 'NAVIGATE_TO',
         category: 'HOME',
+        target_selection: 'home',
         location: 'HOME',
         language: detectedLang,
         confidence: 0.95,
@@ -613,39 +645,52 @@ export const parseMultilingualQuery = (rawText, lastContext = null) => {
       };
     }
 
-    // Check if query specifies routing
-    if (isRouteQuery) {
+    const isNav = isNavActionQuery(query);
+    const isNearest = isNearestQuery(query);
+    const isNearby = isNearbyQuery(query);
+
+    // If query asks to navigate, take me there, or asks for the nearest/closest place:
+    // Examples:
+    // - "Take me to the nearest coffee shop."
+    // - "কাছের কফি শপে নিয়ে চলো"
+    // - "मेरे पास सबसे नज़दीकी कैफे पर ले चलो"
+    // - "take me to a cafe"
+    // - "nearest coffee shop"
+    if (isNav || isRouteQuery || (isNearest && !clean.includes('show') && !clean.includes('দেখাও') && !clean.includes('दिखाओ'))) {
       return {
-        intent: 'FIND_ROUTE',
+        intent: isRouteQuery ? 'FIND_ROUTE' : 'NAVIGATE_TO',
         category: category,
+        target_selection: 'nearest',
         location: 'CURRENT_LOCATION',
         language: detectedLang,
-        confidence: 0.92,
+        confidence: 0.96,
         original_query: query
       };
     }
 
-    // Check if query is nearby / near me or has broken English asking for near
-    const nearby = isNearbyQuery(query);
-
-    // Default for category requests (like "Show hospital near me", "Me need hospital near",
-    // "Nearest hospital কোথায়?", "Hospital where? Near me.", "আমার একটা hospital লাগবে কাছে",
-    // "Near toilet show")
+    // Default nearby category discovery:
+    // Examples:
+    // - "Show coffee shops near me"
+    // - "find a cafe nearby"
+    // - "আমার কাছাকাছি হাসপাতাল কোথায়?"
+    // - "मेरे पास toilet कहाँ है?"
     return {
       intent: 'FIND_NEARBY',
       category: category,
+      target_selection: isNearest ? 'nearest' : 'all',
       location: 'CURRENT_LOCATION',
       language: detectedLang,
-      confidence: nearby ? 0.95 : 0.88,
+      confidence: (isNearby || isNearest) ? 0.96 : 0.90,
       original_query: query
     };
   }
 
-  // Step 7: General Location Navigation / Search (e.g., "Go to Tokyo", "দিল্লি দেখাও", "Kolkata")
+  // Step 7: General Location Navigation / Search for SPECIFIC NAMED PLACES (e.g., "Go to Tokyo", "দিল্লি দেখাও", "Kolkata")
+  // Only executed when NO category was identified
   const navPatterns = [
     /(?:go to|fly to|navigate to|search|show|find|take me to|travel to|where is)\s+(.+)/i,
-    /(?:যাও|খুঁজুন|দেখাও|নিয়ে চলো)\s+(.+)/i,
-    /(?:जाओ|दिखाओ|खोजो|ले चलो)\s+(.+)/i,
+    /(?:যাও|খুঁজুন|দেখাও|নিয়ে চলো|নিয়ে যাও)\s+(.+)/i,
+    /(?:जाओ|दिखाओ|खोजो|ले चलो|ले जाओ)\s+(.+)/i,
     /(.+?)\s*(?:দেখাও|যাব|जाओ|दिखाओ|dekhao|chalo)/i
   ];
 
@@ -666,7 +711,7 @@ export const parseMultilingualQuery = (rawText, lastContext = null) => {
     }
   }
 
-  // If text is short and looks like a place name (e.g. "Paris", "Kolkata", "London")
+  // If text is short and looks like a named place (e.g. "Paris", "Kolkata", "London")
   if (
     clean.length >= 2 &&
     clean.length <= 40 &&
@@ -682,8 +727,7 @@ export const parseMultilingualQuery = (rawText, lastContext = null) => {
     };
   }
 
-  // Step 8: Ambiguous / Unclear query -> Generate Clarification
-  // If user says something vague like "urgent" or "help" or "emergency", recommend hospital
+  // Step 8: Ambiguous / Unclear query -> Clarification
   if (clean.includes('emergency') || clean.includes('জরুরী') || clean.includes('मदद') || clean.includes('help')) {
     return {
       intent: 'FIND_NEARBY',
@@ -705,10 +749,10 @@ export const parseMultilingualQuery = (rawText, lastContext = null) => {
     confidence: 0.2,
     needs_clarification: true,
     clarification_question: detectedLang === 'bn' || detectedLang === 'bn-en'
-      ? 'আপনি কি কাছাকাছি কোনো জায়গা বা হাসপাতাল খুঁজছেন?'
+      ? 'আপনি কি কাছাকাছি কোনো ক্যাফে, হাসপাতাল বা রেস্তোরাঁ খুঁজছেন?'
       : detectedLang === 'hi' || detectedLang === 'hi-en'
-      ? 'क्या आप आस-पास कोई जगह या अस्पताल ढूंढ रहे हैं?'
-      : 'Did you mean to find a nearby place or navigate to a city?',
+      ? 'क्या आप आस-पास कोई कैफे, अस्पताल या रेस्टोरेंट ढूंढ रहे हैं?'
+      : 'Did you mean to find a nearby place or navigate to a destination?',
     original_query: query
   };
 };

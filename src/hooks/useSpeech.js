@@ -3,7 +3,7 @@ import { useMapState } from '../context/MapStateContext';
 import { parseVoiceCommand } from '../services/aiParser';
 import { detectLanguage, CATEGORIES } from '../services/multilingualEngine';
 import { geocode } from '../services/geocoder';
-import { fetchNearbyPOIs, reverseGeocode } from '../services/nearbyService';
+import { fetchNearbyPOIs, reverseGeocode, isPOIMatchingCategory } from '../services/nearbyService';
 import { calculateRoute } from '../services/routingService';
 
 export const useSpeech = () => {
@@ -94,9 +94,7 @@ export const useSpeech = () => {
     recognition.continuous = false;
     recognition.interimResults = true;
 
-    // Use selected language or browser default for auto
     if (language === 'auto') {
-      // Default to browser locale
       recognition.lang = navigator.language || 'en-US';
     } else {
       recognition.lang = language;
@@ -172,7 +170,6 @@ export const useSpeech = () => {
     };
   }, [language, addCommandLog, setVoiceStatus, setFeedback, setDetectedLanguage]);
 
-  // Keep transcript string on ref
   useEffect(() => {
     if (recognitionRef.current) {
       recognitionRef.current.finalTranscriptStr = transcript;
@@ -186,7 +183,7 @@ export const useSpeech = () => {
 
     const cleanLower = text.toLowerCase().trim();
 
-    // Check if user is answering a pending clarification (e.g., "yes", "হ্যাঁ", "हाँ", "sure", "correct")
+    // Affirmative confirmation check
     const affirmativeWords = [
       'yes', 'yeah', 'yep', 'sure', 'correct', 'ok', 'okay',
       'হ্যাঁ', 'হ্যা', 'হাঁ', 'ঠিক আছে', 'করো',
@@ -201,10 +198,10 @@ export const useSpeech = () => {
       return;
     }
 
-    // Parse with Multilingual & Conversational Context
+    // Parse with Multilingual & Semantic Engine
     const parsed = await parseVoiceCommand(text, lastVoiceIntent);
 
-    // If clarification needed, prompt politely instead of randomly executing
+    // If clarification needed, prompt politely
     if (parsed.needs_clarification && parsed.clarification_question) {
       setPendingClarification(parsed);
       setVoiceStatus('clarifying');
@@ -219,11 +216,149 @@ export const useSpeech = () => {
 
   // Dispatch Geospatial Action from Structured Intent
   const executeIntent = async (parsed) => {
-    const { intent, category, location, language: detectedLang, context_reference, targetIndex } = parsed;
+    const { intent, category, location, language: detectedLang, context_reference, targetIndex, target_selection } = parsed;
     let responseText = '';
 
-    // 1. FIND_NEARBY
-    if (intent === 'FIND_NEARBY') {
+    const centerLat = userLocation?.lat || 20.5937;
+    const centerLon = userLocation?.lon || 78.9629;
+    const startCoords = userLocation
+      ? { lon: userLocation.lon, lat: userLocation.lat }
+      : { lon: centerLon, lat: centerLat };
+
+    // 1. NAVIGATE_TO (e.g. "Take me to the nearest coffee shop", "কাছের কফি শপে নিয়ে চলো", "मेरे पास सबसे नज़दीकी कैफे पर ले चलो")
+    if (intent === 'NAVIGATE_TO') {
+      if (category === 'HOME' || location === 'HOME') {
+        const dest = homeLocation || userLocation;
+        if (dest) {
+          setTargetLocation({
+            lon: dest.lon,
+            lat: dest.lat,
+            zoom: 16,
+            label: 'Home',
+            timestamp: Date.now()
+          });
+          if (detectedLang === 'bn' || detectedLang === 'bn-en') {
+            responseText = 'বাড়ি যাওয়ার দিক নির্দেশ করা হলো।';
+          } else if (detectedLang === 'hi' || detectedLang === 'hi-en') {
+            responseText = 'घर की ओर नेविगेट किया जा रहा है।';
+          } else {
+            responseText = 'Navigating towards home.';
+          }
+        } else {
+          responseText = 'Home location set to current location.';
+          if (userLocation) setHomeLocation(userLocation);
+        }
+      } else if (category) {
+        // Semantic Category Navigation (e.g. "Take me to the nearest coffee shop", "take me to a cafe")
+        const catKey = category;
+        const catDef = CATEGORIES[catKey] || CATEGORIES.CAFE;
+
+        addCommandLog(`Searching nearby ${catDef.label.toLowerCase()}...`, 'system');
+        const pois = await fetchNearbyPOIs(centerLat, centerLon, catKey.toLowerCase());
+
+        // Match POIs strictly by semantic category/type/tags — NOT requiring place name to have category word
+        const matchingPOIs = pois.filter((p) => isPOIMatchingCategory(p, catKey));
+        const candidatePOIs = matchingPOIs.length > 0 ? matchingPOIs : pois;
+
+        if (candidatePOIs.length > 0) {
+          // Sort by distance to find the nearest matching place
+          const sorted = [...candidatePOIs].sort((a, b) => (a.distance || 0) - (b.distance || 0));
+          const nearestPlace = sorted[0];
+
+          setSelectedPlace(nearestPlace);
+          setNearbyPlaces(candidatePOIs);
+          setActiveCategory(catKey.toLowerCase());
+          setIsNearbyOpen(true);
+
+          const destCoords = { lon: nearestPlace.lon, lat: nearestPlace.lat };
+          addCommandLog(`Routing to nearest: ${nearestPlace.name}...`, 'system');
+
+          const routeData = await calculateRoute(startCoords, destCoords);
+          if (routeData) {
+            setActiveRoute({
+              ...routeData,
+              destinationName: nearestPlace.name,
+              destinationCoords: destCoords,
+              timestamp: Date.now()
+            });
+
+            setTargetLocation({
+              lon: (startCoords.lon + destCoords.lon) / 2,
+              lat: (startCoords.lat + destCoords.lat) / 2,
+              zoom: 14,
+              timestamp: Date.now()
+            });
+
+            const distKm = routeData.distanceKm;
+            const eta = routeData.durationFormatted;
+
+            if (detectedLang === 'bn' || detectedLang === 'bn-en') {
+              responseText = `সবচেয়ে কাছের ${catDef.label} ${nearestPlace.name}-এ নিয়ে যাচ্ছি (${distKm} কিমি, প্রায় ${eta})।`;
+            } else if (detectedLang === 'hi' || detectedLang === 'hi-en') {
+              responseText = `सबसे नजदीकी ${catDef.label} ${nearestPlace.name} के लिए नेविगेट किया जा रहा है (${distKm} किमी, लगभग ${eta})।`;
+            } else {
+              responseText = `Navigating to nearest ${catDef.label}: ${nearestPlace.name} (${distKm} km, ~${eta}).`;
+            }
+          } else {
+            setTargetLocation({
+              lon: nearestPlace.lon,
+              lat: nearestPlace.lat,
+              zoom: 16,
+              label: nearestPlace.name,
+              timestamp: Date.now()
+            });
+            responseText = `Found nearest ${catDef.label}: ${nearestPlace.name}.`;
+          }
+
+          setLastVoiceIntent({
+            intent: 'NAVIGATE_TO',
+            category: catKey,
+            pois: candidatePOIs,
+            selectedPlace: nearestPlace,
+            timestamp: Date.now()
+          });
+        } else {
+          responseText = `Could not find any ${catDef.label} nearby.`;
+        }
+      } else if (location && location !== 'CURRENT_LOCATION') {
+        // Navigation to a named city/landmark (e.g. "Go to Paris")
+        addCommandLog(`Locating ${location}...`, 'system');
+        const coords = await geocode(location);
+        if (coords) {
+          const destCoords = { lon: coords.lon, lat: coords.lat };
+          const routeData = await calculateRoute(startCoords, destCoords);
+
+          if (routeData) {
+            setActiveRoute({
+              ...routeData,
+              destinationName: coords.displayName?.split(',')[0] || location,
+              destinationCoords: destCoords,
+              timestamp: Date.now()
+            });
+            setTargetLocation({
+              lon: (startCoords.lon + destCoords.lon) / 2,
+              lat: (startCoords.lat + destCoords.lat) / 2,
+              zoom: 12,
+              timestamp: Date.now()
+            });
+          } else {
+            setTargetLocation({
+              lon: coords.lon,
+              lat: coords.lat,
+              zoom: 15,
+              label: coords.displayName?.split(',')[0] || location,
+              timestamp: Date.now()
+            });
+          }
+          responseText = `Navigating to ${location}.`;
+        } else {
+          responseText = `Could not find "${location}".`;
+        }
+      }
+    }
+
+    // 2. FIND_NEARBY (e.g. "coffee shop near me", "show hospitals near me")
+    else if (intent === 'FIND_NEARBY') {
       const catKey = category || 'HOSPITAL';
       const catDef = CATEGORIES[catKey] || CATEGORIES.HOSPITAL;
 
@@ -252,23 +387,16 @@ export const useSpeech = () => {
         }
       } else {
         // Fetch nearby POIs around user location
-        let centerLat = userLocation?.lat;
-        let centerLon = userLocation?.lon;
-
-        if (!centerLat || !centerLon) {
-          // Fallback to coordinates
-          centerLat = 20.5937;
-          centerLon = 78.9629;
-        }
-
         const pois = await fetchNearbyPOIs(centerLat, centerLon, catKey.toLowerCase());
-        setNearbyPlaces(pois);
+        const matchingPOIs = pois.filter((p) => isPOIMatchingCategory(p, catKey));
+        const finalPOIs = matchingPOIs.length > 0 ? matchingPOIs : pois;
+
+        setNearbyPlaces(finalPOIs);
         setActiveCategory(catKey.toLowerCase());
         setIsNearbyOpen(true);
 
-        if (pois && pois.length > 0) {
-          // Select and center on first POI
-          const firstPoi = pois[0];
+        if (finalPOIs && finalPOIs.length > 0) {
+          const firstPoi = finalPOIs[0];
           setSelectedPlace(firstPoi);
           setTargetLocation({
             lon: firstPoi.lon,
@@ -279,27 +407,88 @@ export const useSpeech = () => {
           });
 
           if (detectedLang === 'bn' || detectedLang === 'bn-en') {
-            responseText = `আপনার কাছাকাছি ${pois.length}টি ${catDef.label} পাওয়া গেছে।`;
+            responseText = `আপনার কাছাকাছি ${finalPOIs.length}টি ${catDef.label} পাওয়া গেছে।`;
           } else if (detectedLang === 'hi' || detectedLang === 'hi-en') {
-            responseText = `आपके पास ${pois.length} ${catDef.label} मिले हैं।`;
+            responseText = `आपके पास ${finalPOIs.length} ${catDef.label} मिले हैं।`;
           } else {
-            responseText = `Found ${pois.length} ${catDef.label} locations near you.`;
+            responseText = `Found ${finalPOIs.length} ${catDef.label} locations near you.`;
           }
         } else {
           responseText = `No ${catDef.label} found right nearby.`;
         }
 
-        // Save in conversational context
         setLastVoiceIntent({
           intent: 'FIND_NEARBY',
           category: catKey,
-          pois: pois,
+          pois: finalPOIs,
           timestamp: Date.now()
         });
       }
     }
 
-    // 2. GET_LOCATION_INFORMATION (e.g., "How far is the first one?")
+    // 3. FIND_ROUTE (Direct routing request)
+    else if (intent === 'FIND_ROUTE') {
+      let destCoords = null;
+      let destName = '';
+
+      if (context_reference === 'selected_or_first') {
+        const p = selectedPlace || nearbyPlaces[0];
+        if (p) {
+          destCoords = { lon: p.lon, lat: p.lat };
+          destName = p.name;
+        }
+      } else if (category) {
+        const pois = await fetchNearbyPOIs(centerLat, centerLon, category.toLowerCase());
+        const matching = pois.filter((p) => isPOIMatchingCategory(p, category));
+        const target = matching[0] || pois[0];
+        if (target) {
+          destCoords = { lon: target.lon, lat: target.lat };
+          destName = target.name;
+          setSelectedPlace(target);
+          setNearbyPlaces(matching.length > 0 ? matching : pois);
+        }
+      } else if (location && location !== 'CURRENT_LOCATION') {
+        const coords = await geocode(location);
+        if (coords) {
+          destCoords = { lon: coords.lon, lat: coords.lat };
+          destName = location;
+        }
+      }
+
+      if (destCoords) {
+        addCommandLog(`Calculating route to ${destName}...`, 'system');
+        const routeData = await calculateRoute(startCoords, destCoords);
+        if (routeData) {
+          setActiveRoute({
+            ...routeData,
+            destinationName: destName,
+            destinationCoords: destCoords,
+            timestamp: Date.now()
+          });
+
+          setTargetLocation({
+            lon: (startCoords.lon + destCoords.lon) / 2,
+            lat: (startCoords.lat + destCoords.lat) / 2,
+            zoom: 13,
+            timestamp: Date.now()
+          });
+
+          if (detectedLang === 'bn' || detectedLang === 'bn-en') {
+            responseText = `${destName}-এ পৌঁছাতে প্রায় ${routeData.durationFormatted} লাগবে (${routeData.distanceKm} কিমি)।`;
+          } else if (detectedLang === 'hi' || detectedLang === 'hi-en') {
+            responseText = `${destName} का रास्ता: दूरी ${routeData.distanceKm} किमी, लगभग ${routeData.durationFormatted} लगेंगे।`;
+          } else {
+            responseText = `Route to ${destName} found: ${routeData.distanceKm} km, approx ${routeData.durationFormatted}.`;
+          }
+        } else {
+          responseText = `Could not calculate route to ${destName}.`;
+        }
+      } else {
+        responseText = `Please specify a destination to find route.`;
+      }
+    }
+
+    // 4. GET_LOCATION_INFORMATION (e.g., "How far is the first one?")
     else if (intent === 'GET_LOCATION_INFORMATION') {
       const idx = targetIndex ?? 0;
       const targetPlace = nearbyPlaces[idx] || selectedPlace;
@@ -330,7 +519,7 @@ export const useSpeech = () => {
       }
     }
 
-    // 3. SEARCH_LOCATION / General Places
+    // 5. SEARCH_LOCATION / Named Place Search
     else if (intent === 'SEARCH_LOCATION' && location) {
       addCommandLog(`Searching for ${location}...`, 'system');
       const coords = await geocode(location);
@@ -343,7 +532,6 @@ export const useSpeech = () => {
           timestamp: Date.now()
         });
 
-        // Also fetch POIs for searched city
         try {
           const pois = await fetchNearbyPOIs(coords.lat, coords.lon, 'all');
           if (pois && pois.length > 0) {
@@ -363,107 +551,6 @@ export const useSpeech = () => {
         }
       } else {
         responseText = `Could not find "${location}".`;
-      }
-    }
-
-    // 4. FIND_ROUTE (Turn-by-turn navigation & polyline)
-    else if (intent === 'FIND_ROUTE') {
-      let destCoords = null;
-      let destName = '';
-
-      if (context_reference === 'selected_or_first') {
-        const p = selectedPlace || nearbyPlaces[0];
-        if (p) {
-          destCoords = { lon: p.lon, lat: p.lat };
-          destName = p.name;
-        }
-      } else if (category) {
-        const p = nearbyPlaces.find((item) => item.category === category.toLowerCase()) || nearbyPlaces[0];
-        if (p) {
-          destCoords = { lon: p.lon, lat: p.lat };
-          destName = p.name;
-        }
-      } else if (location && location !== 'CURRENT_LOCATION') {
-        const coords = await geocode(location);
-        if (coords) {
-          destCoords = { lon: coords.lon, lat: coords.lat };
-          destName = location;
-        }
-      }
-
-      const startCoords = userLocation
-        ? { lon: userLocation.lon, lat: userLocation.lat }
-        : { lon: 78.9629, lat: 20.5937 };
-
-      if (destCoords) {
-        addCommandLog(`Calculating route to ${destName}...`, 'system');
-        const routeData = await calculateRoute(startCoords, destCoords);
-        if (routeData) {
-          setActiveRoute({
-            ...routeData,
-            destinationName: destName,
-            destinationCoords: destCoords,
-            timestamp: Date.now()
-          });
-
-          // Center map between start and end
-          setTargetLocation({
-            lon: (startCoords.lon + destCoords.lon) / 2,
-            lat: (startCoords.lat + destCoords.lat) / 2,
-            zoom: 13,
-            timestamp: Date.now()
-          });
-
-          if (detectedLang === 'bn' || detectedLang === 'bn-en') {
-            responseText = `${destName}-এ পৌঁছাতে প্রায় ${routeData.durationFormatted} লাগবে (${routeData.distanceKm} কিমি)।`;
-          } else if (detectedLang === 'hi' || detectedLang === 'hi-en') {
-            responseText = `${destName} का रास्ता: दूरी ${routeData.distanceKm} किमी, लगभग ${routeData.durationFormatted} लगेंगे।`;
-          } else {
-            responseText = `Route to ${destName} found: ${routeData.distanceKm} km, approx ${routeData.durationFormatted}.`;
-          }
-        } else {
-          responseText = `Could not calculate route to ${destName}.`;
-        }
-      } else {
-        responseText = `Please specify a destination to find route.`;
-      }
-    }
-
-    // 5. NAVIGATE_TO (e.g. Home or destination)
-    else if (intent === 'NAVIGATE_TO') {
-      if (category === 'HOME' || location === 'HOME') {
-        const dest = homeLocation || userLocation;
-        if (dest) {
-          setTargetLocation({
-            lon: dest.lon,
-            lat: dest.lat,
-            zoom: 16,
-            label: 'Home',
-            timestamp: Date.now()
-          });
-          if (detectedLang === 'bn' || detectedLang === 'bn-en') {
-            responseText = 'বাড়ি যাওয়ার দিক নির্দেশ করা হলো।';
-          } else if (detectedLang === 'hi' || detectedLang === 'hi-en') {
-            responseText = 'घर की ओर नेविगेट किया जा रहा है।';
-          } else {
-            responseText = 'Navigating towards home.';
-          }
-        } else {
-          responseText = 'Home location set to current location.';
-          if (userLocation) setHomeLocation(userLocation);
-        }
-      } else if (location) {
-        const coords = await geocode(location);
-        if (coords) {
-          setTargetLocation({
-            lon: coords.lon,
-            lat: coords.lat,
-            zoom: 15,
-            label: coords.displayName?.split(',')[0] || location,
-            timestamp: Date.now()
-          });
-          responseText = `Navigating to ${location}.`;
-        }
       }
     }
 
@@ -511,7 +598,7 @@ export const useSpeech = () => {
       }
     }
 
-    // 7. CHANGE_MAP_LAYER (2D / 3D / Satellite)
+    // 7. CHANGE_MAP_LAYER
     else if (intent === 'CHANGE_MAP_LAYER') {
       if (parsed.layer === '3D') {
         setMapMode('3D');
@@ -564,7 +651,6 @@ export const useSpeech = () => {
       setVoiceStatus('idle');
     } else {
       try {
-        // If clarifying, cancel clarification on fresh voice trigger
         if (pendingClarification) setPendingClarification(null);
         recognitionRef.current.start();
       } catch (e) {
